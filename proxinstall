@@ -461,6 +461,17 @@ sub create_ipconf_view {
 
     my ($cidr_label, $cidr_box, $ipconf_entry_addr, $ipconf_entry_mask) = create_cidr_inputs($cidr);
 
+    my $cfg_gateway = Proxmox::Install::Config::get_gateway();
+    my $default_gw_addr = defined($default_gateway) ? $default_gateway->{gateway} : undef;
+    my $gateway = $cfg_gateway // $default_gw_addr || '192.168.100.1';
+
+    my ($gw_label, $ipconf_entry_gw) = create_text_input($gateway, 'Gateway');
+
+    my $cfg_dns = Proxmox::Install::Config::get_dns();
+    my $dnsserver = $cfg_dns // $default_dns || $gateway;
+
+    my ($dns_label, $ipconf_entry_dns) = create_text_input($dnsserver, 'DNS Server');
+
     my $device_model = Gtk3::ListStore->new('Glib::String', 'Glib::String', 'Glib::String');
     my $device_cb = Gtk3::ComboBox->new_with_model($device_model);
     $device_cb->set_active(0);
@@ -539,11 +550,26 @@ sub create_ipconf_view {
 
         Proxmox::Install::Config::set_mngmt_nic($iface->{name});
 
+        # autofill gateway and DNS server from the default route of the newly selected interface,
+        # if it has one, so they describe the same route the kernel uses there
+        my $gw_ipversion = $default_gateway_ipversion;
+        my ($dev_gw) = grep { ($_->{dev} // '') eq $new }
+            ($routes->{gateway4} // ()),
+            ($routes->{gateways6} // [])->@*;
+
+        if (my $dev_gw_ipversion = $dev_gw && ip_get_version($dev_gw->{gateway} // '')) {
+            $gw_ipversion = $dev_gw_ipversion;
+            $ipconf_entry_gw->set_text($dev_gw->{gateway});
+
+            my ($dns) = grep { ip_get_version($_) == $gw_ipversion } $network->{dns}->{dns}->@*;
+            $ipconf_entry_dns->set_text($dns) if defined($dns);
+        }
+
         # try to find an address that matches the IP version of the gateway,
         # otherwise fall back to the first address on the interface
         my $addrs = $iface->{addresses} // [];
         my ($addr) = grep {
-            ip_get_version($_->{address}) == $default_gateway_ipversion
+            ip_get_version($_->{address}) == $gw_ipversion
         } @$addrs;
         $addr //= $addrs->[0];
 
@@ -622,18 +648,8 @@ sub create_ipconf_view {
     $grid->attach($cidr_label, 0, 2, 1, 1);
     $grid->attach($cidr_box, 1, 2, 2, 1);
 
-    my $cfg_gateway = Proxmox::Install::Config::get_gateway();
-    my $default_gw_addr = defined($default_gateway) ? $default_gateway->{gateway} : undef;
-    my $gateway = $cfg_gateway // $default_gw_addr || '192.168.100.1';
-
-    my ($gw_label, $ipconf_entry_gw) = create_text_input($gateway, 'Gateway');
     $grid->attach($gw_label, 0, 3, 1, 1);
     $grid->attach($ipconf_entry_gw, 1, 3, 2, 1);
-
-    my $cfg_dns = Proxmox::Install::Config::get_dns();
-    my $dnsserver = $cfg_dns // $default_dns || $gateway;
-
-    my ($dns_label, $ipconf_entry_dns) = create_text_input($dnsserver, 'DNS Server');
 
     $grid->attach($dns_label, 0, 4, 1, 1);
     $grid->attach($ipconf_entry_dns, 1, 4, 2, 1);
