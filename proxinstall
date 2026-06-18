@@ -236,6 +236,13 @@ sub create_main_window {
 
     Proxmox::UI::init_gtk($gtk_state, $iso_env);
 
+    # make it play nice without a compositor, i.e. this enables proper damage
+    # tracking in GTK in combination with WebKit2
+    my $visual = $window->get_screen()->get_rgba_visual();
+    if ($visual) {
+        $window->set_visual($visual);
+    }
+
     $window->show_all;
     $window->present();
 }
@@ -1667,7 +1674,6 @@ sub create_hdoption_view {
     $dialog->show();
 
     $dialog->run();
-    $gtk_state->{window}->queue_draw();
 
     my $get_float = sub {
         my ($entry) = @_;
