@@ -1515,8 +1515,6 @@ _EOD
 
         unlink "$targetdir/proxmox_install_mode";
 
-        my $country = Proxmox::Install::Config::get_country();
-
         # create extended_states for apt (avoid cron job warning if that
         # file does not exist)
         file_write_all("$targetdir/var/lib/apt/extended_states", '');
@@ -1562,10 +1560,6 @@ _EOD
         }
 
         if ($iso_env->{product} eq 'pve') {
-            # save installer settings
-            my $ucc = uc($country);
-            debconfig_set($targetdir, "pve-manager pve-manager/country string $ucc\n");
-
             # do run a potentially unconfigured/unisolated network accessible routing daemon
             unlink "$targetdir/etc/systemd/system/multi-user.target.wants/frr.service"
                 or $!{ENOENT}
