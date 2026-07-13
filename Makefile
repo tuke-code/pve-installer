@@ -54,7 +54,6 @@ $(BUILDDIR):
 	  banner/ \
 	  country.pl \
 	  html/ \
-	  interfaces \
 	  proxinstall \
 	  proxmox-low-level-installer \
 	  proxmox-auto-installer/ \
@@ -125,7 +124,6 @@ install: $(INSTALLER_SOURCES) $(COMPILED_BINS)
 	$(MAKE) -C banner install
 	$(MAKE) -C Proxmox install
 	$(MAKE) -C proxmox-first-boot install
-	install -D -m 644 interfaces $(DESTDIR)/etc/network/interfaces
 	install -D -m 755 fake-start-stop-daemon $(VARLIBDIR)/fake-start-stop-daemon
 	install -D -m 755 policy-disable-rc.d $(VARLIBDIR)/policy-disable-rc.d
 	install -D -m 644 locale-info.json $(VARLIBDIR)/locale-info.json
