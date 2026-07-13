@@ -8,7 +8,6 @@ banner/pve-banner.png /var/lib/proxmox-installer
 etc
 html /var/lib/proxmox-installer/
 usr/sbin
-usr/bin/checktime
 usr/bin/proxinstall
 usr/bin/proxmox-auto-installer
 usr/bin/proxmox-chroot
