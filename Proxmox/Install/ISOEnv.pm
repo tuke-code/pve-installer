@@ -33,7 +33,7 @@ my $product_cfg = {
     },
     pdm => {
         fullname => 'Proxmox Datacenter Manager',
-        port => '8443', # TODO: confirm
+        port => '8443',
         enable_btrfs => JSON::false,
         bridged_network => JSON::false,
     },
