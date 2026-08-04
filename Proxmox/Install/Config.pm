@@ -222,6 +222,18 @@ sub get_btrfs_opt {
 sub set_target_hd { set_key('target_hd', $_[0]); }
 sub get_target_hd { return get('target_hd'); }
 
+# for logs and files that can end up in a support bundle
+sub get_redacted {
+    require Storable;
+    my $r = Storable::dclone(get());
+
+    if (defined($r->{root_password}) && ref($r->{root_password}) eq 'HASH') {
+        $r->{root_password} = { '<redacted>' => '<redacted>' };
+    }
+
+    return $r;
+}
+
 sub set_disk_selection {
     my ($id, $v) = @_;
     my $disk_selection = get('disk_selection');

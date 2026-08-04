@@ -1160,12 +1160,19 @@ sub create_ack_view {
         $html_data =~ s/$k/$v/g;
     }
 
+    # may end up in a support bundle, so redacted and created without access for others
     eval {
-        my $config = Proxmox::Install::Config::get();
-        file_write_all(
-            "$iso_env->{locations}->{run}/config-ack.json",
-            to_json($config, { utf8 => 1, canonical => 1 }) . "\n",
-        );
+        require Fcntl;
+        my $path = "$iso_env->{locations}->{run}/config-ack.json";
+        unlink($path);
+        sysopen(
+            my $fh, $path, Fcntl::O_WRONLY() | Fcntl::O_CREAT() | Fcntl::O_EXCL(), 0600,
+        ) or die "sysopen $path: $!";
+        my $blob = to_json(
+            Proxmox::Install::Config::get_redacted(), { utf8 => 1, canonical => 1 },
+        ) . "\n";
+        print {$fh} $blob or die "write $path: $!";
+        close($fh) or die "close $path: $!";
     };
     warn "failed to write config-for-ack -  $@" if $@;
 
