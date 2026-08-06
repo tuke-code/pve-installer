@@ -1825,7 +1825,25 @@ sub create_hdoption_view {
 
     $dialog->set_title("Harddisk options");
 
+    $dialog->add_button("_Cancel", 0);
     $dialog->add_button("_OK", 1);
+
+    # widget callbacks below change the config right away, Cancel restores this snapshot
+    require Storable;
+    my $clone_or_undef = sub {
+        my ($v) = @_;
+        return defined($v) ? Storable::dclone($v) : undef;
+    };
+    my $cancel_snapshot = {
+        filesys => Proxmox::Install::Config::get_filesys(),
+        target_hd => Proxmox::Install::Config::get_target_hd(),
+        zfs_opts => $clone_or_undef->(Proxmox::Install::Config::get_zfs_opt()),
+        btrfs_opts => $clone_or_undef->(Proxmox::Install::Config::get_btrfs_opt()),
+        disk_selection => $clone_or_undef->(Proxmox::Install::Config::get_disk_selection()),
+        # the RAID disk selectors write here, Next applies it to the config
+        gtk_disk_selection => { $gtk_state->{disk_selection}->%* },
+        hdoption_first_setup => $hdoption_first_setup,
+    };
 
     my $contarea = $dialog->get_content_area();
 
@@ -2026,7 +2044,39 @@ sub create_hdoption_view {
 
     $dialog->show();
 
-    $dialog->run();
+    my $response = $dialog->run();
+
+    if (!defined($response) || $response ne '1') {
+        Proxmox::Install::Config::set_filesys($cancel_snapshot->{filesys})
+            if defined($cancel_snapshot->{filesys});
+        Proxmox::Install::Config::set_target_hd($cancel_snapshot->{target_hd});
+        for my $k (keys %{ $cancel_snapshot->{zfs_opts} }) {
+            Proxmox::Install::Config::set_zfs_opt($k, $cancel_snapshot->{zfs_opts}->{$k});
+        }
+        for my $k (keys %{ $cancel_snapshot->{btrfs_opts} }) {
+            Proxmox::Install::Config::set_btrfs_opt($k, $cancel_snapshot->{btrfs_opts}->{$k});
+        }
+        for my $id (keys %{ Proxmox::Install::Config::get_disk_selection() // {} }) {
+            Proxmox::Install::Config::set_disk_selection($id, undef);
+        }
+        for my $id (keys %{ $cancel_snapshot->{disk_selection} // {} }) {
+            Proxmox::Install::Config::set_disk_selection(
+                $id,
+                $cancel_snapshot->{disk_selection}->{$id},
+            );
+        }
+        $gtk_state->{disk_selection} = $cancel_snapshot->{gtk_disk_selection};
+        $hdoption_first_setup = $cancel_snapshot->{hdoption_first_setup};
+
+        # changing the filesystem also switched the target view of the main window
+        my $filesys = Proxmox::Install::Config::get_filesys();
+        my $raid = $filesys =~ m/zfs|btrfs/;
+        $target_hd_combo->set_visible(!$raid);
+        $target_hd_label->set_text($raid ? "Target: $filesys " : "Target Harddisk");
+
+        $dialog->destroy();
+        return;
+    }
 
     my $get_float = sub {
         my ($entry) = @_;
