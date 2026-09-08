@@ -579,7 +579,11 @@ fn summary_dialog(siv: &mut Cursive) -> InstallerView {
                     ("name".to_owned(), "Option".to_owned()),
                     ("value".to_owned(), "Selected value".to_owned()),
                 ])
-                .items(state.options.to_summary(&state.locales)),
+                .items(
+                    state
+                        .options
+                        .to_summary(&state.runtime_info, &state.locales),
+                ),
         ))
         .child(
             LinearLayout::horizontal()

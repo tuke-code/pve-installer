@@ -2,9 +2,9 @@ use crate::SummaryOption;
 
 use proxmox_installer_common::{
     options::{BootdiskOptions, NetworkOptions, TimezoneOptions},
-    setup::LocaleInfo,
+    setup::{LocaleInfo, NetworkInfo, RuntimeInfo},
 };
-use proxmox_installer_types::EMAIL_DEFAULT_PLACEHOLDER;
+use proxmox_installer_types::{EMAIL_DEFAULT_PLACEHOLDER, answer::NetworkBondOptions};
 
 #[derive(Clone)]
 pub struct PasswordOptions {
@@ -31,14 +31,23 @@ pub struct InstallerOptions {
 }
 
 impl InstallerOptions {
-    pub fn to_summary(&self, locales: &LocaleInfo) -> Vec<SummaryOption> {
+    pub fn to_summary(
+        &self,
+        runtime_info: &RuntimeInfo,
+        locales: &LocaleInfo,
+    ) -> Vec<SummaryOption> {
         let kb_layout = locales
             .kmap
             .get(&self.timezone.kb_layout)
             .map(|l| &l.name)
             .unwrap_or(&self.timezone.kb_layout);
 
-        vec![
+        let mngmt_interface = match &self.network.bond_opts {
+            Some(opts) => format!("bond0 (mode: {})", opts.mode),
+            None => self.network.ifname.to_owned(),
+        };
+
+        let mut summary = vec![
             SummaryOption::new("Bootdisk filesystem", self.bootdisk.fstype.to_string()),
             SummaryOption::new(
                 "Bootdisk(s)",
@@ -52,11 +61,39 @@ impl InstallerOptions {
             SummaryOption::new("Timezone", &self.timezone.timezone),
             SummaryOption::new("Keyboard layout", kb_layout),
             SummaryOption::new("Administrator email", &self.password.email),
-            SummaryOption::new("Management interface", &self.network.ifname),
+            SummaryOption::new("Management interface", &mngmt_interface),
+        ];
+
+        if let Some(opts) = &self.network.bond_opts {
+            let members = self
+                .resolve_bond_member_names(opts, &runtime_info.network)
+                .join(" | ");
+            summary.push(SummaryOption::new("Bond members", members));
+        }
+
+        summary.extend([
             SummaryOption::new("Hostname", self.network.fqdn.to_string()),
             SummaryOption::new("Host IP (CIDR)", self.network.address.to_string()),
             SummaryOption::new("Gateway", self.network.gateway.to_string()),
             SummaryOption::new("DNS", self.network.dns_server.to_string()),
-        ]
+        ]);
+
+        summary
+    }
+
+    fn resolve_bond_member_names(
+        &self,
+        bond: &NetworkBondOptions,
+        network: &NetworkInfo,
+    ) -> Vec<String> {
+        bond.members
+            .iter()
+            .map(|mac| {
+                network.physical_interface_by_mac(mac).map_or_else(
+                    || "<unknown>".to_owned(),
+                    |iface| iface.installed_name(self.network.pinning_opts.as_ref()),
+                )
+            })
+            .collect()
     }
 }

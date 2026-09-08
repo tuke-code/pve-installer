@@ -1,10 +1,10 @@
 use anyhow::{Result, anyhow, bail};
 use cursive::{
     Cursive, View,
-    view::{Nameable, Resizable, ViewWrapper},
+    view::{Finder, Nameable, Resizable, ViewWrapper},
     views::{
-        Button, Checkbox, Dialog, DummyView, EditView, LinearLayout, NamedView, Panel, ResizedView,
-        ScrollView, SelectView, TextView,
+        BoxedView, Button, Checkbox, Dialog, DummyView, EditView, LinearLayout, NamedView, Panel,
+        ResizedView, ScrollView, SelectView, TextView,
     },
 };
 use std::{
@@ -18,15 +18,28 @@ use proxmox_installer_common::{
     options::{NetworkInterfacePinningOptions, NetworkOptions},
     setup::{Interface, NetworkInfo},
 };
-use proxmox_network_types::{MacAddress, fqdn::Fqdn, ip_address::Cidr};
+use proxmox_installer_types::answer::NetworkBondOptions;
+use proxmox_network_types::{
+    MacAddress,
+    bond::{BondXmitHashPolicy, LinuxBondMode},
+    fqdn::Fqdn,
+    ip_address::Cidr,
+};
 
-use super::{CidrAddressEditView, FormView};
+use super::{CheckboxGroup, CidrAddressEditView, FormView};
 
 struct NetworkViewOptions {
     pinning_enabled: bool,
+    bond_enabled: bool,
+    network: NetworkInfo,
     interfaces: Vec<Interface>,
+    /// Last selected interface (by its MAC address) in the [SelectView].
+    /// Keeps track of the selected interface across enabling/disabling bonding, which replaces the
+    /// view.
+    last_selected_iface: MacAddress,
     // kept while disabled, so that toggling the checkbox does not reset them
     pinning_options: NetworkInterfacePinningOptions,
+    bond_options: NetworkBondOptions,
 }
 
 /// Convenience wrapper when needing to take a (interior-mutable) reference to
@@ -45,6 +58,7 @@ impl NetworkOptionsView {
     const ADVANCED_OPTIONS_BUTTON_NAME: &str = "network-advanced-options-button";
 
     const INTERFACE_PINNING_VIEW_NAME: &str = "network-name-pinning-view";
+    const BOND_OPTIONS_VIEW_NAME: &str = "network-bond-options-view";
 
     pub fn new(options: &NetworkOptions, network_info: &NetworkInfo) -> Self {
         let mut interfaces = network_info
@@ -59,20 +73,28 @@ impl NetworkOptionsView {
         let selected_mac = network_info
             .interfaces
             .get(&options.ifname)
-            .map(|iface| iface.mac);
+            .map(|iface| iface.mac)
+            .unwrap_or_else(|| {
+                interfaces
+                    .first()
+                    .expect("at least one network interface")
+                    .mac
+            });
 
         let options_ref = Arc::new(Mutex::new(NetworkViewOptions {
             pinning_enabled: options.pinning_opts.is_some(),
+            bond_enabled: options.bond_opts.is_some(),
+            network: network_info.clone(),
             interfaces,
+            last_selected_iface: selected_mac,
             pinning_options: options.pinning_opts.clone().unwrap_or_default(),
+            bond_options: options.bond_opts.clone().unwrap_or_default(),
         }));
-
-        let iface_selection = Self::build_mgmt_ifname_selectview(options_ref.clone(), selected_mac);
 
         let form = FormView::<()>::new()
             .child(
                 "Management interface",
-                iface_selection.with_name(Self::MGMT_IFNAME_SELECTVIEW_NAME),
+                Self::build_mgmt_ifname_view(options_ref.clone()),
             )
             .child(
                 "Hostname (FQDN)",
@@ -122,16 +144,20 @@ impl NetworkOptionsView {
     }
 
     pub fn get_values(&mut self) -> Result<NetworkOptions, String> {
+        let selected_iface = self
+            .view
+            .call_on_name(
+                Self::MGMT_IFNAME_SELECTVIEW_NAME,
+                |view: &mut SelectView<Interface>| view.selection(),
+            )
+            .flatten();
+
         let form = self
             .view
             .get_child_mut(0)
             .and_then(|v| v.downcast_mut::<NamedView<FormView>>())
             .ok_or("failed to retrieve network options form")?
             .get_mut();
-
-        let iface = form
-            .get_value::<NamedView<SelectView<Interface>>, _>(0)
-            .ok_or("failed to retrieve management interface name")?;
 
         let fqdn = form
             .get_value::<EditView, _>(1)
@@ -156,18 +182,26 @@ impl NetworkOptionsView {
             .parse::<IpAddr>()
             .map_err(|err| err.to_string())?;
 
-        let pinning_opts = self
-            .options
-            .lock()
-            .map(|opt| opt.pinning_enabled.then_some(opt.pinning_options.clone()))
-            .map_err(|err| err.to_string())?;
+        let options = self.options.lock().map_err(|err| err.to_string())?;
 
-        let ifname = if let Some(opts) = &pinning_opts
-            && let Some(pinned) = iface.to_pinned(opts)
-        {
-            pinned.name
+        let pinning_opts = options
+            .pinning_enabled
+            .then_some(options.pinning_options.clone());
+
+        let bond_opts = options.bond_enabled.then_some(options.bond_options.clone());
+
+        let ifname = if options.bond_enabled {
+            "bond0".to_owned()
         } else {
-            iface.name
+            let iface = selected_iface
+                .map(|iface| (*iface).clone())
+                .ok_or("failed to retrieve management interface name")?;
+
+            pinning_opts
+                .as_ref()
+                .and_then(|opts| iface.to_pinned(opts))
+                .unwrap_or(iface)
+                .name
         };
 
         if address.address().is_ipv4() != gateway.is_ipv4() {
@@ -184,7 +218,7 @@ impl NetworkOptionsView {
                 gateway,
                 dns_server,
                 pinning_opts,
-                bond_opts: None,
+                bond_opts,
                 vlan_opts: None,
             })
         }
@@ -192,10 +226,15 @@ impl NetworkOptionsView {
 
     fn advanced_options_view(options_ref: NetworkViewOptionsRef) -> impl View {
         let inner = ScrollView::new(
-            LinearLayout::vertical().child(Panel::new(
-                InterfacePinningOptionsView::new(options_ref.clone())
-                    .with_name(Self::INTERFACE_PINNING_VIEW_NAME),
-            )),
+            LinearLayout::vertical()
+                .child(Panel::new(
+                    InterfacePinningOptionsView::new(options_ref.clone())
+                        .with_name(Self::INTERFACE_PINNING_VIEW_NAME),
+                ))
+                .child(Panel::new(
+                    BondOptionsView::new(options_ref.clone())
+                        .with_name(Self::BOND_OPTIONS_VIEW_NAME),
+                )),
         );
 
         Dialog::around(inner)
@@ -203,10 +242,11 @@ impl NetworkOptionsView {
             .button("Ok", {
                 move |siv| {
                     match Self::get_view_values(siv, options_ref.clone()) {
-                        Ok(pin_opts) => {
+                        Ok((pin_opts, bond_opts)) => {
                             siv.pop_layer();
                             let options = &mut options_ref.lock().expect("unpoisoned lock");
                             options.pinning_options = pin_opts;
+                            options.bond_options = bond_opts;
                         }
                         Err(err) => {
                             siv.add_layer(Dialog::info(err.to_string()));
@@ -214,7 +254,7 @@ impl NetworkOptionsView {
                         }
                     }
 
-                    Self::refresh_ifname_selectview(siv, options_ref.clone());
+                    Self::refresh_ifname_view(siv, options_ref.clone());
                 }
             })
             .max_size((80, 40))
@@ -223,8 +263,11 @@ impl NetworkOptionsView {
     fn get_view_values(
         siv: &mut Cursive,
         options_ref: NetworkViewOptionsRef,
-    ) -> Result<NetworkInterfacePinningOptions> {
-        let pinning_enabled = options_ref.lock().expect("unpoisoned lock").pinning_enabled;
+    ) -> Result<(NetworkInterfacePinningOptions, NetworkBondOptions)> {
+        let (pinning_enabled, bond_enabled) = {
+            let options = options_ref.lock().expect("unpoisoned lock");
+            (options.pinning_enabled, options.bond_enabled)
+        };
 
         // disabled options may be left empty or invalid, they keep their previous values
         let pin_opts = if pinning_enabled {
@@ -241,23 +284,51 @@ impl NetworkOptionsView {
                 .clone()
         };
 
-        Ok(pin_opts)
+        let bond_opts = if bond_enabled {
+            let bond_opts = siv
+                .call_on_name(
+                    Self::BOND_OPTIONS_VIEW_NAME,
+                    |view: &mut BondOptionsView| view.get_values(&pin_opts),
+                )
+                .unwrap_or_else(|| bail!("failed to retrieve management network bond options"))?;
+            bond_opts.verify()?;
+            bond_opts
+        } else {
+            options_ref
+                .lock()
+                .expect("unpoisoned lock")
+                .bond_options
+                .clone()
+        };
+
+        Ok((pin_opts, bond_opts))
     }
 
-    fn refresh_ifname_selectview(siv: &mut Cursive, options_ref: NetworkViewOptionsRef) {
-        siv.call_on_name(
-            Self::MGMT_IFNAME_SELECTVIEW_NAME,
-            |view: &mut SelectView<Interface>| {
-                let selected_mac = view.selection().map(|iface| iface.mac);
-                *view = Self::build_mgmt_ifname_selectview(options_ref, selected_mac);
-            },
-        );
+    fn refresh_ifname_view(siv: &mut Cursive, options_ref: NetworkViewOptionsRef) {
+        siv.call_on_name(Self::FORM_VIEW_NAME, |form: &mut FormView<()>| {
+            form.replace_child(0, Self::build_mgmt_ifname_view(options_ref));
+        });
     }
 
-    fn build_mgmt_ifname_selectview(
-        options_ref: NetworkViewOptionsRef,
-        selected_mac: Option<MacAddress>,
-    ) -> SelectView<Interface> {
+    /// Builds the management interface selection, or the bond summary if bonding is enabled.
+    fn build_mgmt_ifname_view(options_ref: NetworkViewOptionsRef) -> BoxedView {
+        let options = options_ref.lock().expect("unpoisoned lock");
+
+        if options.bond_enabled {
+            // a wrapped value would shift the labels of all following rows in the form
+            BoxedView::boxed(
+                TextView::new(format!("bond0 (mode: {})", options.bond_options.mode)).no_wrap(),
+            )
+        } else {
+            drop(options);
+            BoxedView::boxed(
+                Self::build_mgmt_ifname_selectview(options_ref)
+                    .with_name(Self::MGMT_IFNAME_SELECTVIEW_NAME),
+            )
+        }
+    }
+
+    fn build_mgmt_ifname_selectview(options_ref: NetworkViewOptionsRef) -> SelectView<Interface> {
         let options = options_ref.lock().expect("unpoisoned lock");
 
         // Map all interfaces to a list of (human-readable interface name, [Interface]) pairs
@@ -275,20 +346,21 @@ impl NetworkOptionsView {
             })
             .collect::<Vec<(String, Interface)>>();
 
-        let mut view = SelectView::new().popup().with_all(ifnames.clone());
-
-        let selected_mac = selected_mac.unwrap_or_else(|| {
-            options
-                .interfaces
-                .first()
-                .expect("at least one network interface")
-                .mac
-        });
+        let mut view = SelectView::new()
+            .popup()
+            .with_all(ifnames.clone())
+            .on_submit({
+                let options_ref = options_ref.clone();
+                move |_, iface| {
+                    let mut options = options_ref.lock().expect("unpoisoned lock");
+                    options.last_selected_iface = iface.mac;
+                }
+            });
 
         // Finally, (try to) select the current one
         let selected = view
             .iter()
-            .position(|(_label, iface)| iface.mac == selected_mac)
+            .position(|(_label, iface)| iface.mac == options.last_selected_iface)
             .unwrap_or(0); // we sort UP interfaces first, so select the first UP interface
         //
         view.set_selection(selected);
@@ -333,6 +405,7 @@ impl InterfacePinningOptionsView {
                                         enabled;
 
                                     Self::toggle_all(siv, enabled);
+                                    BondOptionsView::refresh_ifnames(siv, options_ref.clone());
                                 }
                             })
                             .with_name(Self::ENABLED_CHECKBOX_NAME),
@@ -435,5 +508,288 @@ impl InterfacePinningOptionsView {
 }
 
 impl ViewWrapper for InterfacePinningOptionsView {
+    cursive::wrap_impl!(self.view: LinearLayout);
+}
+
+struct BondOptionsView {
+    view: LinearLayout,
+    options_ref: NetworkViewOptionsRef,
+}
+
+impl BondOptionsView {
+    const FORM_NAME: &str = "network-bond-form-view";
+    const MEMBERS_VIEW_NAME: &str = "network-bond-members-checkboxes-view";
+
+    fn new(options_ref: NetworkViewOptionsRef) -> Self {
+        let options = &options_ref.lock().expect("unpoisoned lock");
+
+        let mut view = LinearLayout::vertical()
+            .child(
+                LinearLayout::horizontal()
+                    .child(
+                        Checkbox::new()
+                            .with_checked(options.bond_enabled)
+                            .on_change({
+                                let options_ref = options_ref.clone();
+                                move |siv, enabled| {
+                                    options_ref.lock().expect("unpoisoned lock").bond_enabled =
+                                        enabled;
+
+                                    Self::toggle_all(siv, enabled);
+                                }
+                            }),
+                    )
+                    .child(TextView::new(" Enable bonding for the management interface").no_wrap()),
+            )
+            .child(DummyView::new());
+
+        let mut form = FormView::<()>::new()
+            .child(
+                "Bond mode",
+                SelectView::new()
+                    .popup()
+                    .with_all(
+                        NetworkBondOptions::MODES
+                            .iter()
+                            .map(|m| (Self::mode_label(*m), *m)),
+                    )
+                    .selected(
+                        NetworkBondOptions::MODES
+                            .iter()
+                            .position(|m| *m == options.bond_options.mode)
+                            .unwrap_or_default(),
+                    )
+                    .on_submit(Self::toggle_mode_dependent_options),
+            )
+            .child(
+                "Hash policy",
+                SelectView::new()
+                    .popup()
+                    .with_all(
+                        NetworkBondOptions::HASH_POLICIES
+                            .iter()
+                            .map(|m| (m.to_string(), *m)),
+                    )
+                    .selected(
+                        NetworkBondOptions::HASH_POLICIES
+                            .iter()
+                            .position(|m| *m == options.bond_options.hash_policy)
+                            .unwrap_or_default(),
+                    ),
+            )
+            .child(
+                "Primary interface",
+                EditView::new().content(
+                    options
+                        .bond_options
+                        .primary_interface
+                        .and_then(|mac| options.network.physical_interface_by_mac(&mac))
+                        .map(|iface| Self::interface_name(options, iface))
+                        .unwrap_or_default(),
+                ),
+            );
+        Self::set_options_enabled(&mut form, options.bond_enabled);
+
+        view.add_child(form.with_name(Self::FORM_NAME));
+        view.add_child(DummyView::new());
+
+        let mut checkboxes = CheckboxGroup::<MacAddress>::new();
+        let is_listed = |iface: &&Interface| {
+            options
+                .network
+                .physical_interface_by_mac(&iface.mac)
+                .is_some_and(|member| member.name == iface.name)
+        };
+        for iface in options.interfaces.iter().filter(is_listed) {
+            let label = Self::format_interface_label(options, iface);
+            let is_member = options.bond_options.members.contains(&iface.mac);
+
+            checkboxes.add(&label, is_member, iface.mac);
+        }
+        checkboxes.set_enabled(options.bond_enabled);
+        view.add_child(checkboxes.with_name(Self::MEMBERS_VIEW_NAME));
+
+        Self {
+            view,
+            options_ref: options_ref.clone(),
+        }
+    }
+
+    fn mode_label(mode: LinuxBondMode) -> String {
+        match mode {
+            LinuxBondMode::Ieee802_3ad => "LACP (802.3ad)".to_owned(),
+            mode => mode.to_string(),
+        }
+    }
+
+    fn hash_policy_view_enabled(mode: LinuxBondMode) -> bool {
+        matches!(mode, LinuxBondMode::Ieee802_3ad | LinuxBondMode::BalanceXor)
+    }
+
+    fn primary_interface_view_enabled(mode: LinuxBondMode) -> bool {
+        mode == LinuxBondMode::ActiveBackup
+    }
+
+    /// Enables or disables the bond options, except those the selected mode does not use.
+    fn set_options_enabled(form: &mut FormView, enabled: bool) {
+        let mode = form.get_value::<SelectView<LinuxBondMode>, _>(0);
+        let hash_policy = enabled && mode.is_some_and(Self::hash_policy_view_enabled);
+        let primary = enabled && mode.is_some_and(Self::primary_interface_view_enabled);
+
+        if let Some(v) = form.get_child_mut::<SelectView<LinuxBondMode>>(0) {
+            v.set_enabled(enabled);
+        }
+        if let Some(v) = form.get_child_mut::<SelectView<BondXmitHashPolicy>>(1) {
+            v.set_enabled(hash_policy);
+        }
+        if let Some(v) = form.get_child_mut::<EditView>(2) {
+            v.set_enabled(primary);
+        }
+
+        form.set_label_enabled(0, enabled);
+        form.set_label_enabled(1, hash_policy);
+        form.set_label_enabled(2, primary);
+    }
+
+    fn toggle_all(siv: &mut Cursive, enabled: bool) {
+        siv.call_on_name(Self::FORM_NAME, |form: &mut FormView| {
+            Self::set_options_enabled(form, enabled)
+        });
+
+        siv.call_on_name(
+            Self::MEMBERS_VIEW_NAME,
+            |group: &mut CheckboxGroup<MacAddress>| {
+                group.set_enabled(enabled);
+            },
+        );
+    }
+
+    fn toggle_mode_dependent_options(siv: &mut Cursive, _: &LinuxBondMode) {
+        siv.call_on_name(Self::FORM_NAME, |form: &mut FormView| {
+            Self::set_options_enabled(form, true)
+        });
+    }
+
+    fn refresh_ifnames(siv: &mut Cursive, options_ref: NetworkViewOptionsRef) {
+        siv.call_on_name(
+            Self::MEMBERS_VIEW_NAME,
+            |group: &mut CheckboxGroup<MacAddress>| {
+                let options = options_ref.lock().expect("unpoisoned lock");
+                group.update_labels(|mac| {
+                    options.network.physical_interface_by_mac(mac).map_or_else(
+                        || mac.to_string(),
+                        |iface| Self::format_interface_label(&options, iface),
+                    )
+                });
+            },
+        );
+    }
+
+    /// Takes the pinning options as currently entered in the dialog, to resolve the name of the
+    /// primary interface.
+    fn get_values(
+        &mut self,
+        pin_opts: &NetworkInterfacePinningOptions,
+    ) -> Result<NetworkBondOptions> {
+        let form = self
+            .view
+            .get_child_mut(2)
+            .and_then(|v| v.downcast_mut::<NamedView<FormView<()>>>())
+            .ok_or(anyhow!("failed to retrieve bond options form"))?
+            .get_mut();
+
+        let mode = form
+            .get_value::<SelectView<LinuxBondMode>, _>(0)
+            .ok_or(anyhow!("failed to retrieve bond mode"))?;
+
+        let hash_policy = form
+            .get_value::<SelectView<BondXmitHashPolicy>, _>(1)
+            .ok_or(anyhow!("failed to retrieve bond hash policy"))?;
+
+        let primary_name = form
+            .get_value::<EditView, String>(2)
+            .ok_or(anyhow!("failed to retrieve bond primary interface"))?;
+
+        let members: Vec<MacAddress> = self
+            .view
+            .get_child_mut(4)
+            .and_then(|v| v.downcast_mut::<NamedView<CheckboxGroup<MacAddress>>>())
+            .ok_or(anyhow!("failed to retrieve bond member interface group"))?
+            .get_mut()
+            .entries()
+            .filter_map(|(checked, mac)| checked.then_some(*mac))
+            .collect();
+
+        if members.len() < 2 {
+            bail!("at least 2 member interfaces are required for setting up a bond");
+        }
+
+        let primary_interface =
+            if Self::primary_interface_view_enabled(mode) && !primary_name.is_empty() {
+                let mac = self.get_mac_address_for_interface_name(&primary_name, pin_opts)?;
+                if !members.contains(&mac) {
+                    bail!("primary interface '{primary_name}' is not a member of the bond");
+                }
+                Some(mac)
+            } else {
+                None
+            };
+
+        Ok(NetworkBondOptions {
+            members,
+            mode,
+            hash_policy,
+            primary_interface,
+            ..Default::default()
+        })
+    }
+
+    /// Name the interface will have on the installed system.
+    fn interface_name(options: &NetworkViewOptions, iface: &Interface) -> String {
+        iface.installed_name(options.pinning_enabled.then_some(&options.pinning_options))
+    }
+
+    fn format_interface_label(options: &NetworkViewOptions, iface: &Interface) -> String {
+        let name = Self::interface_name(options, iface);
+        let mut label = format!(
+            "{name} ({:x}, {}, {})",
+            iface.mac, iface.driver, iface.state
+        );
+
+        if !iface.addresses.is_empty() {
+            label += "\n  ";
+            label += iface
+                .addresses
+                .iter()
+                .fold(String::new(), |acc, addr| format!("{acc}, {addr}"))
+                .trim_start_matches(", ");
+        }
+
+        label
+    }
+
+    fn get_mac_address_for_interface_name(
+        &self,
+        ifname: &str,
+        pin_opts: &NetworkInterfacePinningOptions,
+    ) -> Result<MacAddress> {
+        let options = &self.options_ref.lock().expect("unpoisoned lock");
+
+        if options.pinning_enabled {
+            pin_opts
+                .mapping
+                .iter()
+                .find_map(|(mac, name)| (*name == ifname).then_some(*mac))
+        } else {
+            options
+                .interfaces
+                .iter()
+                .find_map(|iface| (iface.name == ifname).then_some(iface.mac))
+        }
+        .ok_or_else(|| anyhow!("unknown primary interface '{ifname}'"))
+    }
+}
+
+impl ViewWrapper for BondOptionsView {
     cursive::wrap_impl!(self.view: LinearLayout);
 }
