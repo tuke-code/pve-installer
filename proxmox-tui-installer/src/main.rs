@@ -36,7 +36,6 @@ use views::{
     TableViewItem, TimezoneOptionsView,
 };
 
-// TextView::center() seems to garble the first two lines, so fix it manually here.
 const PROXMOX_LOGO: &str = r"
  ____
 |  _ \ _ __ _____  ___ __ ___   _____  __
