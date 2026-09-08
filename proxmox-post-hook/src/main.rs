@@ -20,7 +20,7 @@ use proxmox_installer_common::http::{self, header::HeaderMap};
 use proxmox_installer_types::answer::{AutoInstallerConfig, PostNotificationHookInfo};
 
 /// Current version of the schema sent by this implementation.
-const POST_HOOK_SCHEMA_VERSION: &str = "1.2";
+const POST_HOOK_SCHEMA_VERSION: &str = "1.3";
 
 mod detail {
     use anyhow::{Context, Result, anyhow, bail};
@@ -282,7 +282,15 @@ mod detail {
                     .get(&nic.mac)
                     .unwrap_or(&nic.name);
 
-                let is_management = config.mngmt_nic == *ifname;
+                // with a bond, all its members carry the management network
+                let is_management = config.mngmt_nic == *ifname
+                    || config.mngmt_bond.as_ref().is_some_and(|bond| {
+                        bond.members.contains(&nic.mac)
+                            && run_env
+                                .network
+                                .physical_interface_by_mac(&nic.mac)
+                                .is_some_and(|member| member.name == nic.name)
+                    });
 
                 anyhow::Ok(NetworkInterfaceInfo {
                     name: ifname.clone(),

@@ -15,8 +15,8 @@ use crate::setup::{LocaleInfo, NetworkInfo, RuntimeInfo, SetupInfo};
 use proxmox_installer_types::{
     EMAIL_DEFAULT_PLACEHOLDER,
     answer::{
-        BtrfsCompressOption, BtrfsRaidLevel, FilesystemType, NetworkInterfacePinningOptionsAnswer,
-        ZfsChecksumOption, ZfsCompressOption, ZfsRaidLevel,
+        BtrfsCompressOption, BtrfsRaidLevel, FilesystemType, NetworkBondOptions,
+        NetworkInterfacePinningOptionsAnswer, ZfsChecksumOption, ZfsCompressOption, ZfsRaidLevel,
     },
 };
 use proxmox_network_types::{MacAddress, fqdn::Fqdn, ip_address::Cidr};
@@ -395,6 +395,7 @@ pub struct NetworkOptions {
     pub gateway: IpAddr,
     pub dns_server: IpAddr,
     pub pinning_opts: Option<NetworkInterfacePinningOptions>,
+    pub bond_opts: Option<NetworkBondOptions>,
 }
 
 impl NetworkOptions {
@@ -405,6 +406,7 @@ impl NetworkOptions {
         network: &NetworkInfo,
         default_domain: Option<&str>,
         pinning_opts: Option<&NetworkInterfacePinningOptions>,
+        bond_opts: Option<&NetworkBondOptions>,
     ) -> Self {
         // Sets up sensible defaults as much as possible, such that even in the
         // worse case nothing breaks down *completely*.
@@ -417,6 +419,7 @@ impl NetworkOptions {
             gateway: Ipv4Addr::new(192, 168, 100, 1).into(),
             dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
             pinning_opts: pinning_opts.cloned(),
+            bond_opts: bond_opts.cloned(),
         };
 
         let iface = if let Some(gw) = &network.routes.gateway4
@@ -477,6 +480,10 @@ impl NetworkOptions {
                     opts.mapping.entry(iface.mac).or_insert(pinned.name);
                 }
             }
+        }
+
+        if this.bond_opts.is_some() {
+            this.ifname = "bond0".to_owned();
         }
 
         this
@@ -632,7 +639,7 @@ mod tests {
         let (setup, mut info) = mock_setup_network();
 
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, None, None),
+            NetworkOptions::defaults_from(&setup, &info, None, None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("foo.bar.com").unwrap(),
@@ -640,12 +647,13 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
 
         info.hostname = None;
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, None, None),
+            NetworkOptions::defaults_from(&setup, &info, None, None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("pve.bar.com").unwrap(),
@@ -653,12 +661,13 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
 
         info.dns.domain = None;
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, None, None),
+            NetworkOptions::defaults_from(&setup, &info, None, None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("pve.example.invalid").unwrap(),
@@ -666,12 +675,13 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
 
         info.hostname = Some("foo".to_owned());
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, None, None),
+            NetworkOptions::defaults_from(&setup, &info, None, None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("foo.example.invalid").unwrap(),
@@ -679,6 +689,7 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
     }
@@ -726,7 +737,7 @@ mod tests {
         let (setup, info) = mock_setup_network_v6_only();
 
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, None, None),
+            NetworkOptions::defaults_from(&setup, &info, None, None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("foo.bar.com").unwrap(),
@@ -734,6 +745,7 @@ mod tests {
                 gateway: IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
                 dns_server: IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x53)),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
     }
@@ -743,7 +755,7 @@ mod tests {
         let (setup, mut info) = mock_setup_network();
 
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, None, None),
+            NetworkOptions::defaults_from(&setup, &info, None, None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("foo.bar.com").unwrap(),
@@ -751,12 +763,13 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
 
         info.dns.domain = None;
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, Some("custom.local"), None),
+            NetworkOptions::defaults_from(&setup, &info, Some("custom.local"), None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("foo.custom.local").unwrap(),
@@ -764,12 +777,13 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
 
         info.dns.domain = Some("some.domain.local".to_owned());
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, Some("custom.local"), None),
+            NetworkOptions::defaults_from(&setup, &info, Some("custom.local"), None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("foo.custom.local").unwrap(),
@@ -777,6 +791,7 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
     }
@@ -813,7 +828,7 @@ mod tests {
         let setup = SetupInfo::mocked();
 
         pretty_assertions::assert_eq!(
-            NetworkOptions::defaults_from(&setup, &info, None, None),
+            NetworkOptions::defaults_from(&setup, &info, None, None, None),
             NetworkOptions {
                 ifname: "eth0".to_owned(),
                 fqdn: Fqdn::from("pve.example.invalid").unwrap(),
@@ -821,6 +836,7 @@ mod tests {
                 gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 100, 1)),
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
+                bond_opts: None,
             }
         );
     }

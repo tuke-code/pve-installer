@@ -204,6 +204,7 @@ impl NetworkOptionsView {
                 gateway,
                 dns_server,
                 pinning_opts,
+                bond_opts: None,
             })
         }
     }

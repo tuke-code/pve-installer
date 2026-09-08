@@ -128,6 +128,8 @@ mod tests {
             full_fqdn_from_dhcp_with_default_domain,
             hashed_root_password,
             minimal,
+            network_bond,
+            network_bond_from_answer,
             network_interface_pinning,
             network_interface_pinning_disabled,
             network_interface_pinning_from_answer,
@@ -153,11 +155,19 @@ mod tests {
             fqdn_hostname_only,
             ipv4_and_subnet_mask_33,
             lvm_swapsize_greater_than_hdsize,
+            network_bond_dhcp_other_interface,
+            network_bond_duplicate_member,
+            network_bond_invalid_hash_policy,
+            network_bond_invalid_mode,
+            network_bond_primary_not_member,
+            network_bond_single_interface,
+            network_bond_unknown_member,
+            network_bond_unknown_option,
             network_interface_pinning_overlong_interface_name,
             no_fqdn_from_dhcp,
             no_root_password_set,
             short_password,
-            zfs_raid_single_disk
+            zfs_raid_single_disk,
         );
     }
 }

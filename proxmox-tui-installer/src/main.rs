@@ -178,6 +178,7 @@ fn main() {
                 None,
                 // We enable network interface pinning by default in the TUI
                 Some(&NetworkInterfacePinningOptions::default()),
+                None,
             ),
             autoreboot: true,
         },

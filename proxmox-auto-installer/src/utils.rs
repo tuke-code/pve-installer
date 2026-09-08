@@ -49,6 +49,7 @@ fn get_network_settings(
                 &runtime_info.network,
                 None,
                 pinning_opts.as_ref(),
+                answer.network.bond(),
             );
             opts.fqdn = name.to_owned();
             opts
@@ -77,6 +78,7 @@ fn get_network_settings(
                 &runtime_info.network,
                 domain.as_deref(),
                 pinning_opts.as_ref(),
+                answer.network.bond(),
             )
         }
     };
@@ -86,19 +88,59 @@ fn get_network_settings(
         network_options.dns_server = settings.dns;
         network_options.gateway = settings.gateway;
 
-        let ifname = get_single_udev_index(&settings.filter, &udev_info.nics)?;
-        // the post-installation hook identifies the management interface by its final name
-        network_options.ifname = network_options
-            .pinning_opts
-            .as_ref()
-            .zip(runtime_info.network.interfaces.get(&ifname))
-            .and_then(|(opts, iface)| iface.to_pinned(opts))
-            .map_or(ifname, |iface| iface.name);
+        if network_options.bond_opts.is_none() {
+            let ifname = get_single_udev_index(&settings.filter, &udev_info.nics)?;
+            // the post-installation hook identifies the management interface by its final name
+            network_options.ifname = network_options
+                .pinning_opts
+                .as_ref()
+                .zip(runtime_info.network.interfaces.get(&ifname))
+                .and_then(|(opts, iface)| iface.to_pinned(opts))
+                .map_or(ifname, |iface| iface.name);
+        } else if !settings.filter.is_empty() {
+            warn!("Ignoring network interface filter, the management interface is the bond");
+        }
+    }
+
+    // the lease may be from a network other than the bond's
+    if let NetworkConfig::FromDhcp(_) = &answer.network
+        && let Some(bond_opts) = &network_options.bond_opts
+        && !bond_opts
+            .members
+            .iter()
+            .filter_map(|mac| runtime_info.network.physical_interface_by_mac(mac))
+            .any(|iface| iface.addresses.contains(&network_options.address))
+    {
+        bail!(
+            "address {} from DHCP was not received on a bond member, set the network configuration with source \"from-answer\" instead",
+            network_options.address
+        );
     }
 
     if let Some(opts) = &network_options.pinning_opts {
         info!("Network interface name pinning is enabled");
         opts.verify()?;
+    }
+
+    if let Some(opts) = &network_options.bond_opts {
+        opts.verify()?;
+
+        let members = opts
+            .members
+            .iter()
+            .map(|mac| {
+                runtime_info
+                    .network
+                    .physical_interface_by_mac(mac)
+                    .map_or_else(
+                        || "<unknown>".to_owned(),
+                        |iface| iface.installed_name(network_options.pinning_opts.as_ref()),
+                    )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        info!("Network interface bonding enabled on: {members}");
     }
 
     info!("Network interface used is '{}'", &network_options.ifname);
@@ -507,6 +549,18 @@ pub fn verify_network_settings(
         }
     }
 
+    if let Some(opts) = network.bond() {
+        opts.verify()?;
+
+        if let Some(run_env) = run_env {
+            for mac in &opts.members {
+                if run_env.network.physical_interface_by_mac(mac).is_none() {
+                    bail!("bond member {mac:x} does not match any physical network interface");
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -566,6 +620,7 @@ pub fn parse_answer(
         subscription_key: answer.global.subscription_key.clone(),
 
         mngmt_nic: network_settings.ifname,
+        mngmt_bond: network_settings.bond_opts.as_ref().map(Into::into),
         network_interface_pin_map: network_settings
             .pinning_opts
             .map(|o| o.mapping)

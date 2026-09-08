@@ -1,0 +1,22 @@
+[global]
+keyboard = "de"
+country = "at"
+fqdn = "pveauto.testinstall"
+mailto = "mail@no.invalid"
+timezone = "Europe/Vienna"
+root-password = "12345678"
+
+[network]
+source = "from-answer"
+cidr = "10.10.10.10/24"
+dns = "10.10.10.1"
+gateway = "10.10.10.1"
+
+[network.bond]
+members = ["B4:2E:99:AC:AD:B4", "b4:2e:99:ac:ad:b5"]
+mode = "802.3ad"
+hash-policy = "layer2+3"
+
+[disk-setup]
+filesystem = "ext4"
+disk-list = ["sda"]

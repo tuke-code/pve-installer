@@ -16,9 +16,15 @@ use crate::options::{
 };
 use proxmox_installer_types::{
     BootType, IsoInfo, ProductConfig,
-    answer::{BtrfsCompressOption, FilesystemType, ZfsChecksumOption, ZfsCompressOption},
+    answer::{
+        BtrfsCompressOption, FilesystemType, NetworkBondOptions, ZfsChecksumOption,
+        ZfsCompressOption,
+    },
 };
-use proxmox_network_types::{Cidr, MacAddress};
+use proxmox_network_types::{
+    Cidr, MacAddress,
+    bond::{BondXmitHashPolicy, LinuxBondMode},
+};
 
 /// Paths in the ISO environment containing installer data.
 #[derive(Clone, Deserialize)]
@@ -351,7 +357,8 @@ pub struct NetworkInfo {
     pub dns: Dns,
     pub routes: Routes,
 
-    /// Maps devices to their configuration, if it has a usable configuration.
+    /// Maps devices to their configuration, if it has a usable configuration, keyed by their
+    /// kernel-assigned interface name.
     /// (Contains no entries for devices with only link-local addresses.)
     #[serde(default, deserialize_with = "deserialize_ethernet_interfaces")]
     pub interfaces: BTreeMap<String, Interface>,
@@ -462,6 +469,24 @@ impl Interface {
             None
         }
     }
+
+    /// Returns the name the interface has on the installed system.
+    pub fn installed_name(&self, pinning_opts: Option<&NetworkInterfacePinningOptions>) -> String {
+        pinning_opts
+            .and_then(|opts| self.to_pinned(opts))
+            .map_or_else(|| self.name.clone(), |iface| iface.name)
+    }
+}
+
+impl NetworkInfo {
+    /// Returns the physical interface with the given MAC address. Links sharing one cannot be told
+    /// apart by it, so the first physical one by name stands for all of them, like for the
+    /// low-level installer.
+    pub fn physical_interface_by_mac(&self, mac: &MacAddress) -> Option<&Interface> {
+        self.interfaces
+            .values()
+            .find(|iface| iface.pinned_id.is_some() && iface.mac == *mac)
+    }
 }
 
 /// Root password which can either be in plain-text or hashed format.
@@ -555,6 +580,9 @@ pub struct InstallConfig {
     pub subscription_key: Option<String>,
 
     pub mngmt_nic: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mngmt_bond: Option<InstallBondConfig>,
+
     // Maps MAC addresses -> custom name. If set, enables pinning for all
     // interfaces present.
     #[serde(
@@ -572,6 +600,32 @@ pub struct InstallConfig {
     pub dns: IpAddr,
 
     pub first_boot: InstallFirstBootSetup,
+}
+
+/// Management bond setup, see `mngmt_bond` in Proxmox::Install::Config
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InstallBondConfig {
+    #[serde(serialize_with = "serialize_low_level_mac_addresses")]
+    pub members: Vec<MacAddress>,
+    pub mode: LinuxBondMode,
+    pub hash_policy: BondXmitHashPolicy,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_low_level_optional_mac_address"
+    )]
+    pub primary_interface: Option<MacAddress>,
+}
+
+impl From<&NetworkBondOptions> for InstallBondConfig {
+    fn from(opts: &NetworkBondOptions) -> Self {
+        Self {
+            members: opts.members.clone(),
+            mode: opts.mode,
+            hash_policy: opts.hash_policy,
+            primary_interface: opts.primary_interface,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -627,6 +681,33 @@ where
     serializer.end()
 }
 
+/// Serializes a list of [MacAddress]es in their lower-case format as the low-level installer
+/// expects it.
+fn serialize_low_level_mac_addresses<S>(
+    macs: &[MacAddress],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.collect_seq(macs.iter().map(|mac| format!("{mac:x}")))
+}
+
+/// Serializes an optional [MacAddress] in its lower-case format as the low-level installer
+/// expects it.
+fn serialize_low_level_optional_mac_address<S>(
+    mac: &Option<MacAddress>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match mac {
+        Some(mac) => serializer.serialize_some(&format!("{mac:x}")),
+        None => serializer.serialize_none(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +734,62 @@ mod tests {
         .unwrap();
 
         assert_eq!(network.interfaces.keys().collect::<Vec<_>>(), ["eno1"]);
+    }
+
+    #[test]
+    fn physical_interface_by_mac_is_first_physical_link_by_name() {
+        let network: NetworkInfo = serde_json::from_str(
+            r#"{
+                "dns": {},
+                "routes": {},
+                "interfaces": {
+                    "br0": {
+                        "name": "br0", "index": 2, "mac": "b4:2e:99:ac:ad:b4", "state": "UP",
+                        "driver": "bridge"
+                    },
+                    "enp2s0": {
+                        "name": "enp2s0", "index": 4, "pinned_id": "1", "mac": "b4:2e:99:ac:ad:b4",
+                        "state": "UP", "driver": "igb"
+                    },
+                    "enp1s0": {
+                        "name": "enp1s0", "index": 3, "pinned_id": "0", "mac": "b4:2e:99:ac:ad:b4",
+                        "state": "UP", "driver": "igb"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mac = "b4:2e:99:ac:ad:b4".parse().unwrap();
+        let iface = network.physical_interface_by_mac(&mac).unwrap();
+        assert_eq!(iface.name, "enp1s0");
+
+        let unknown = "b4:2e:99:ac:ad:b5".parse().unwrap();
+        assert!(network.physical_interface_by_mac(&unknown).is_none());
+    }
+
+    #[test]
+    fn bond_config_uses_keys_of_low_level_installer() {
+        // the saved low-level configuration keeps this default without a bond
+        let disabled: InstallBondConfig = serde_json::from_str(
+            r#"{"members":[],"mode":"active-backup","hash_policy":"layer2","primary_interface":null}"#,
+        )
+        .unwrap();
+        assert!(disabled.members.is_empty());
+        assert_eq!(disabled.primary_interface, None);
+
+        let bond = InstallBondConfig {
+            members: vec![
+                "B4:2E:99:AC:AD:B4".parse().unwrap(),
+                "b4:2e:99:ac:ad:b5".parse().unwrap(),
+            ],
+            mode: LinuxBondMode::ActiveBackup,
+            hash_policy: BondXmitHashPolicy::Layer2,
+            primary_interface: Some("B4:2E:99:AC:AD:B5".parse().unwrap()),
+        };
+        assert_eq!(
+            serde_json::to_string(&bond).unwrap(),
+            r#"{"members":["b4:2e:99:ac:ad:b4","b4:2e:99:ac:ad:b5"],"mode":"active-backup","hash_policy":"layer2","primary_interface":"b4:2e:99:ac:ad:b5"}"#
+        );
     }
 }
