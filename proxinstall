@@ -349,34 +349,24 @@ my $create_basic_grid = sub {
     return $grid;
 };
 
-my sub create_network_interface_pin_view {
-    my ($done_cb) = @_;
+my sub create_network_interface_pin_frame {
+    my $frame = Gtk3::Frame->new('Interface Name Pinning');
 
-    my $dialog = Gtk3::Dialog->new();
-    $dialog->set_title('Interface Name Pinning Options');
-    $dialog->add_button('_OK', 'ok');
+    my $vbox = Gtk3::Box->new('vertical', 5);
+    $frame->add($vbox);
+    $vbox->set_margin_start(10);
+    $vbox->set_margin_end(10);
+    $vbox->set_margin_top(5);
+    $vbox->set_margin_bottom(5);
 
-    my $content = $dialog->get_content_area();
-
-    my $hbox = Gtk3::Box->new('horizontal', 0);
-    $content->pack_start($hbox, 1, 1, 5);
+    my $enable_checkbox = Gtk3::CheckButton->new('Pin network interface names');
+    $enable_checkbox->set_active($gtk_state->{network_pinning_enabled});
+    $vbox->pack_start($enable_checkbox, 1, 0, 5);
 
     my $grid = Gtk3::Grid->new();
     $grid->set_column_spacing(10);
     $grid->set_row_spacing(10);
-
-    # make the list scrollable, in case there are lots of interfaces
-    my $scrolled_window = Gtk3::ScrolledWindow->new();
-    $scrolled_window->set_hexpand(1);
-    $scrolled_window->set_propagate_natural_height(1);
-
-    $scrolled_window->add($grid);
-    $scrolled_window->set_policy('never', 'automatic');
-    $scrolled_window->set_min_content_height(200);
-    $scrolled_window->set_margin_start(10);
-    $scrolled_window->set_margin_end(10);
-
-    $hbox->pack_start($scrolled_window, 1, 0, 5);
+    $vbox->pack_start($grid, 1, 1, 5);
 
     my $interfaces = Proxmox::Install::RunEnv::get()->{network}->{interfaces};
     my $mapping = Proxmox::Install::Config::get_network_interface_pin_map();
@@ -412,24 +402,76 @@ my sub create_network_interface_pin_view {
         $inputs->{ $iface->{mac} } = $input;
     }
 
-    $hbox->show_all();
+    my $set_sensitive = sub {
+        my ($active) = @_;
+
+        $grid->foreach(sub {
+            $_[0]->set_sensitive($active);
+        });
+    };
+
+    $set_sensitive->($gtk_state->{network_pinning_enabled});
+    $enable_checkbox->signal_connect(
+        toggled => sub {
+            my $active = !!$enable_checkbox->get_active();
+
+            $gtk_state->{network_pinning_enabled} = $active;
+            $set_sensitive->($active);
+        },
+    );
+
+    my $on_done = sub {
+        # keep the names if disabled, the map is only unset before starting the installation
+        return if !$enable_checkbox->get_active();
+
+        my %new_mapping = map { $_ => $inputs->{$_}->get_text() } keys %$inputs;
+
+        validate_link_pin_map(\%new_mapping);
+        Proxmox::Install::Config::set_network_interface_pin_map(\%new_mapping);
+    };
+
+    return ($frame, $on_done);
+}
+
+my sub create_network_advanced_options_view {
+    my ($done_cb) = @_;
+
+    my $dialog = Gtk3::Dialog->new();
+    $dialog->set_title('Advanced Network Options');
+    $dialog->add_button('_OK', 'ok');
+
+    my $content = $dialog->get_content_area();
+
+    my $scrolled_window = Gtk3::ScrolledWindow->new();
+    $scrolled_window->set_hexpand(1);
+    $scrolled_window->set_vexpand(1);
+    $scrolled_window->set_propagate_natural_height(1);
+    $scrolled_window->set_policy('never', 'automatic');
+    $scrolled_window->set_min_content_height(200);
+
+    my $hbox = Gtk3::Box->new('vertical', 0);
+
+    my ($pin_frame, $pin_on_done) = create_network_interface_pin_frame();
+
+    $hbox->pack_start($pin_frame, 0, 0, 10);
+
+    $scrolled_window->add($hbox);
+    $content->pack_start($scrolled_window, 1, 1, 10);
 
     $dialog->signal_connect(
         response => sub {
-            my %new_mapping = map { $_ => $inputs->{$_}->get_text() } keys %$inputs;
-
-            eval { validate_link_pin_map(\%new_mapping); };
+            eval { $pin_on_done->(); };
             if ($@) {
                 Proxmox::UI::message($@, $dialog);
                 return;
             }
 
-            Proxmox::Install::Config::set_network_interface_pin_map(\%new_mapping);
             $dialog->destroy();
             $done_cb->();
         },
     );
 
+    $dialog->show_all();
     $dialog->run();
 }
 
@@ -522,21 +564,10 @@ sub create_ipconf_view {
         $device_cb->set_active($active);
     };
 
-    my $name_pin_opts_button = Gtk3::Button->new('Options');
-    $name_pin_opts_button->set_sensitive($gtk_state->{network_pinning_enabled});
-    $name_pin_opts_button->signal_connect(
+    my $advanced_opts_button = Gtk3::Button->new('Advanced Options');
+    $advanced_opts_button->signal_connect(
         clicked => sub {
-            create_network_interface_pin_view($refresh_device_cb);
-        },
-    );
-
-    my $name_pin_checkbox = Gtk3::CheckButton->new('Pin network interface names');
-    $name_pin_checkbox->set_active($gtk_state->{network_pinning_enabled});
-    $name_pin_checkbox->signal_connect(
-        toggled => sub {
-            $name_pin_opts_button->set_sensitive(!!$name_pin_checkbox->get_active());
-            $gtk_state->{network_pinning_enabled} = !!$name_pin_checkbox->get_active();
-            $refresh_device_cb->();
+            create_network_advanced_options_view($refresh_device_cb);
         },
     );
 
@@ -661,8 +692,7 @@ sub create_ipconf_view {
     $grid->attach($dns_label, 0, 4, 1, 1);
     $grid->attach($ipconf_entry_dns, 1, 4, 2, 1);
 
-    $grid->attach($name_pin_checkbox, 1, 5, 1, 1);
-    $grid->attach($name_pin_opts_button, 2, 5, 1, 1);
+    $grid->attach($advanced_opts_button, 1, 5, 2, 1);
 
     $gtk_state->{inbox}->show_all;
     set_next(
@@ -729,8 +759,6 @@ sub create_ipconf_view {
                 return;
             }
             Proxmox::Install::Config::set_dns($dns_ip);
-
-            $gtk_state->{network_pinning_enabled} = !!$name_pin_checkbox->get_active();
 
             #print STDERR "TEST $ipaddress/$netmask $gateway_ip $dns_ip\n";
 
