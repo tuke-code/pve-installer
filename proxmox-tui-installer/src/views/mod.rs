@@ -3,9 +3,11 @@ use std::{collections::HashMap, net::IpAddr, str::FromStr, sync::Arc};
 use cursive::{
     Printer, Rect, Vec2, View,
     event::{Event, EventResult},
-    theme::BaseColor,
+    theme::{BaseColor, StyleType},
     view::{Resizable, ViewWrapper},
-    views::{EditView, LinearLayout, NamedView, ResizedView, SelectView, TextView},
+    views::{
+        Checkbox, DummyView, EditView, LinearLayout, NamedView, ResizedView, SelectView, TextView,
+    },
 };
 
 mod bootdisk;
@@ -624,5 +626,93 @@ impl CidrAddressEditView {
 }
 
 impl ViewWrapper for CidrAddressEditView {
+    cursive::wrap_impl!(self.view: LinearLayout);
+}
+
+/// List of checkboxes, each with an associated label and user-defined data for identifying its
+/// meaning.
+pub struct CheckboxGroup<UDT = ()> {
+    view: LinearLayout,
+    user_data: Vec<UDT>,
+}
+
+impl<UDT> CheckboxGroup<UDT> {
+    pub fn new() -> Self {
+        Self {
+            view: LinearLayout::vertical(),
+            user_data: Vec::new(),
+        }
+    }
+
+    pub fn add(&mut self, label: &str, checked: bool, data: UDT) {
+        self.user_data.push(data);
+        self.view.add_child(
+            LinearLayout::horizontal()
+                .child(Checkbox::new().with_checked(checked))
+                .child(DummyView)
+                .child(TextView::new(label)),
+        );
+    }
+
+    /// Returns whether each checkbox is checked, along with its data.
+    pub fn entries(&self) -> impl Iterator<Item = (bool, &UDT)> {
+        self.user_data.iter().enumerate().map(|(i, data)| {
+            let checked = self
+                .view
+                .get_child(i)
+                .and_then(|v| v.downcast_ref::<LinearLayout>())
+                .and_then(|row| row.get_child(0)?.downcast_ref::<Checkbox>())
+                .is_some_and(Checkbox::is_checked);
+
+            (checked, data)
+        })
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        let label_style = if enabled {
+            StyleType::primary()
+        } else {
+            StyleType::secondary()
+        };
+
+        for i in 0..self.view.len() {
+            if let Some(label) = self
+                .view
+                .get_child_mut(i)
+                .and_then(|v| v.downcast_mut::<LinearLayout>())
+                .and_then(|v| v.get_child_mut(2))
+                .and_then(|v| v.downcast_mut::<TextView>())
+            {
+                label.set_style(label_style);
+            }
+
+            if let Some(checkbox) = self
+                .view
+                .get_child_mut(i)
+                .and_then(|v| v.downcast_mut::<LinearLayout>())
+                .and_then(|v| v.get_child_mut(0))
+                .and_then(|v| v.downcast_mut::<Checkbox>())
+            {
+                checkbox.set_enabled(enabled);
+            }
+        }
+    }
+
+    /// Sets the label of each checkbox to the one returned for its data.
+    pub fn update_labels(&mut self, label_for: impl Fn(&UDT) -> String) {
+        for (i, data) in self.user_data.iter().enumerate() {
+            if let Some(label) = self
+                .view
+                .get_child_mut(i)
+                .and_then(|v| v.downcast_mut::<LinearLayout>())
+                .and_then(|row| row.get_child_mut(2)?.downcast_mut::<TextView>())
+            {
+                label.set_content(label_for(data));
+            }
+        }
+    }
+}
+
+impl<UDT: Send + Sync + 'static> ViewWrapper for CheckboxGroup<UDT> {
     cursive::wrap_impl!(self.view: LinearLayout);
 }
