@@ -15,6 +15,8 @@ our @EXPORT_OK = qw(
     parse_ip_mask
     parse_fqdn
     validate_link_pin_map
+    is_valid_bond_mode
+    is_valid_bond_hash_policy
     MIN_IFNAME_LEN
     MAX_IFNAME_LEN
     DEFAULT_PIN_PREFIX
@@ -448,6 +450,22 @@ sub validate_link_pin_map : prototype($) {
 
         $reverse_mapping->{$name} = $mac;
     }
+}
+
+my @BOND_MODES = qw(balance-rr active-backup balance-xor broadcast 802.3ad balance-tlb balance-alb);
+my @BOND_HASH_POLICIES = qw(layer2 layer2+3 layer3+4);
+
+sub bond_modes { return @BOND_MODES; }
+sub bond_hash_policies { return @BOND_HASH_POLICIES; }
+
+sub is_valid_bond_mode {
+    my ($mode) = @_;
+    return defined($mode) && !!grep { $_ eq $mode } @BOND_MODES;
+}
+
+sub is_valid_bond_hash_policy {
+    my ($policy) = @_;
+    return defined($policy) && !!grep { $_ eq $policy } @BOND_HASH_POLICIES;
 }
 
 1;

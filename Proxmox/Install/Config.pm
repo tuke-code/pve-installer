@@ -103,6 +103,16 @@ my sub init_cfg {
         # network related
         mngmt_nic => undef,
 
+        mngmt_bond => {
+            # MAC addresses of member interfaces. If empty, bonding is disabled.
+            members => [],
+            mode => 'active-backup',
+            # only used with '802.3ad' and 'balance-xor' mode
+            hash_policy => 'layer2',
+            # MAC address, only used with 'active-backup' mode, optional
+            primary_interface => undef,
+        },
+
         # maps mac address -> custom name
         # if set to a hash, enables interface name pinning for all interfaces
         network_interface_pin_map => undef,
@@ -256,6 +266,40 @@ sub get_subscription_key { return get('subscription_key'); }
 
 sub set_mngmt_nic { set_key('mngmt_nic', $_[0]); }
 sub get_mngmt_nic { return get('mngmt_nic'); }
+
+sub set_mngmt_bond_opts {
+    my ($opts) = @_;
+
+    my ($members, $mode, $hash_policy, $primary) =
+        $opts->@{qw(members mode hash_policy primary_interface)};
+
+    die "unknown bond mode '$mode'\n" if !Proxmox::Sys::Net::is_valid_bond_mode($mode);
+    die "unknown bond hash policy '$hash_policy'\n"
+        if !Proxmox::Sys::Net::is_valid_bond_hash_policy($hash_policy);
+    die "at least 2 member interfaces are required for a bond\n" if scalar($members->@*) == 1;
+    die "primary interface is not a member of the bond\n"
+        if defined($primary) && !grep { lc($_) eq lc($primary) } $members->@*;
+
+    set_key(
+        'mngmt_bond',
+        {
+            members => [$members->@*],
+            mode => $mode,
+            hash_policy => $hash_policy,
+            primary_interface => $primary,
+        },
+    );
+}
+
+sub get_mngmt_bond_opt {
+    my ($k) = @_;
+    my $opts = get('mngmt_bond');
+    return defined($k) ? $opts->{$k} : $opts;
+}
+
+sub get_mngmt_bond_enabled { # virtual config
+    return scalar(get_mngmt_bond_opt('members')->@*) >= 2;
+}
 
 sub set_network_interface_pin_map { set_key('network_interface_pin_map', $_[0]); }
 sub get_network_interface_pin_map { return get('network_interface_pin_map'); }
