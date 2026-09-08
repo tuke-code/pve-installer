@@ -51,6 +51,11 @@ EOT
     );
 }
 
+my $pin_map = {
+    '12:34:56:ab:cd:ef' => 'nic0',
+    'ab:cd:ef:12:34:56' => 'nic1',
+};
+
 # global config
 $proxmox_install_runenv->redefine(
     get => sub {
@@ -125,10 +130,8 @@ EOT
 
 # interface name pinning test
 Proxmox::Install::Config::merge({
-    network_interface_pin_map => {
-        '12:34:56:ab:cd:ef' => 'nic0',
-        'ab:cd:ef:12:34:56' => 'nic1',
-    },
+    mngmt_nic => 'eno1',
+    network_interface_pin_map => $pin_map,
 });
 is_generated(
     <<EOT
@@ -209,6 +212,53 @@ iface vmbr0 inet6 static
 iface eno2 inet6 manual
 EOT
     , 'gateway learned from IPv6 router advertisements is kept for a bridge',
+);
+
+# Check that unpinnable interfaces (e.g. virtual ones) keep their kernel-assigned name
+Proxmox::Install::Config::merge({
+    network_interface_pin_map => $pin_map,
+    cidr => '192.168.0.10/24',
+    gateway => '192.168.0.1',
+});
+set_config(bridge => 0);
+$proxmox_install_runenv->redefine(
+    get => sub {
+        return {
+            network => {
+                interfaces => {
+                    eno1 => {
+                        mac => '12:34:56:ab:cd:ef',
+                        index => 1,
+                        name => 'eno1',
+                    },
+                    eno2 => {
+                        mac => 'ab:cd:ef:12:34:56',
+                        index => 2,
+                        name => 'eno2',
+                    },
+                    dummy => {
+                        mac => 'aa:bb:cc:dd:ee:ff',
+                        index => 3,
+                        name => 'dummy',
+                    },
+                },
+            },
+        };
+    },
+);
+
+is_generated(
+    <<EOT
+auto nic0
+iface nic0 inet static
+	address 192.168.0.10/24
+	gateway 192.168.0.1
+
+iface dummy inet manual
+
+iface nic1 inet manual
+EOT
+    , 'unpinnable names keep their kernel name',
 );
 
 done_testing();

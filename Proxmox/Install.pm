@@ -854,7 +854,11 @@ sub generate_ifupdown2_config {
 
     foreach my $iface (sort keys $interfaces->%*) {
         my $if = $interfaces->{$iface};
-        my $name = defined($netif_pin_map) ? $netif_pin_map->{ $if->{mac} } : $if->{name};
+        my $name =
+            defined($netif_pin_map)
+            && defined($netif_pin_map->{ $if->{mac} })
+            ? $netif_pin_map->{ $if->{mac} }
+            : $if->{name};
 
         next if $name eq $ethdev;
 
