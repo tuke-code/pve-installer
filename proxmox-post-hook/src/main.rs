@@ -286,7 +286,7 @@ mod detail {
 
                 anyhow::Ok(NetworkInterfaceInfo {
                     name: ifname.clone(),
-                    mac: nic.mac.clone(),
+                    mac: nic.mac,
                     // Use the actual IP address from the low-level install config, as the runtime info
                     // contains the original IP address from DHCP.
                     address: is_management.then_some(config.cidr),

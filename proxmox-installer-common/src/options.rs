@@ -19,7 +19,7 @@ use proxmox_installer_types::{
         ZfsChecksumOption, ZfsCompressOption, ZfsRaidLevel,
     },
 };
-use proxmox_network_types::{fqdn::Fqdn, ip_address::Cidr};
+use proxmox_network_types::{MacAddress, fqdn::Fqdn, ip_address::Cidr};
 
 pub trait RaidLevel {
     /// Returns the minimum number of disks needed for this RAID level.
@@ -315,7 +315,7 @@ impl TimezoneOptions {
 pub struct NetworkInterfacePinningOptions {
     /// Maps MAC address to custom name
     #[serde(default)]
-    pub mapping: HashMap<String, String>,
+    pub mapping: HashMap<MacAddress, String>,
 }
 
 impl NetworkInterfacePinningOptions {
@@ -341,34 +341,34 @@ impl NetworkInterfacePinningOptions {
                 .unwrap()
         });
 
-        let mut reverse_mapping = HashMap::<String, String>::new();
+        let mut reverse_mapping = HashMap::<String, MacAddress>::new();
         for (mac, name) in self.mapping.iter() {
             if name.len() < MIN_IFNAME_LEN {
                 bail!(
-                    "interface name for '{mac}' must be at least {MIN_IFNAME_LEN} characters long"
+                    "interface name for '{mac:x}' must be at least {MIN_IFNAME_LEN} characters long"
                 );
             }
 
             if name.len() > MAX_IFNAME_LEN {
                 bail!(
-                    "interface name '{name}' for '{mac}' cannot be longer than {} characters",
+                    "interface name '{name}' for '{mac:x}' cannot be longer than {} characters",
                     MAX_IFNAME_LEN
                 );
             }
 
             if !re.is_match(name) {
                 bail!(
-                    "interface name '{name}' for '{mac}' is invalid: name must start with a letter and contain only ascii characters, digits and underscores"
+                    "interface name '{name}' for '{mac:x}' is invalid: name must start with a letter and contain only ascii characters, digits and underscores"
                 );
             }
 
             if let Some(duplicate_mac) = reverse_mapping.get(name)
                 && mac != duplicate_mac
             {
-                bail!("duplicate interface name mapping '{name}' for: {mac}, {duplicate_mac}");
+                bail!("duplicate interface name mapping '{name}' for: {mac:x}, {duplicate_mac:x}");
             }
 
-            reverse_mapping.insert(name.clone(), mac.clone());
+            reverse_mapping.insert(name.clone(), *mac);
         }
 
         Ok(())
@@ -379,13 +379,7 @@ impl From<&NetworkInterfacePinningOptionsAnswer> for NetworkInterfacePinningOpti
     fn from(answer: &NetworkInterfacePinningOptionsAnswer) -> Self {
         if answer.enabled {
             Self {
-                // convert all MAC addresses to lowercase before further usage,
-                // to enable easy comparison
-                mapping: answer
-                    .mapping
-                    .iter()
-                    .map(|(k, v)| (k.to_lowercase(), v.clone()))
-                    .collect(),
+                mapping: answer.mapping.clone(),
             }
         } else {
             Self::default()
@@ -480,7 +474,7 @@ impl NetworkOptions {
             // required by the low-level installer
             for iface in network.interfaces.values() {
                 if let Some(pinned) = iface.to_pinned(opts) {
-                    opts.mapping.entry(iface.mac.clone()).or_insert(pinned.name);
+                    opts.mapping.entry(iface.mac).or_insert(pinned.name);
                 }
             }
         }
@@ -609,7 +603,7 @@ mod tests {
                 pinned_id: Some("0".to_owned()),
                 state: InterfaceState::Up,
                 driver: "dummy".to_owned(),
-                mac: "01:23:45:67:89:ab".to_owned(),
+                mac: "01:23:45:67:89:ab".parse().unwrap(),
                 addresses: vec![Cidr::new(Ipv4Addr::new(192, 168, 0, 2), 24).unwrap()],
             },
         );
@@ -699,7 +693,7 @@ mod tests {
                 pinned_id: Some("0".to_owned()),
                 state: InterfaceState::Up,
                 driver: "dummy".to_owned(),
-                mac: "01:23:45:67:89:ab".to_owned(),
+                mac: "01:23:45:67:89:ab".parse().unwrap(),
                 addresses: vec![
                     Cidr::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2), 64).unwrap(),
                 ],
@@ -798,7 +792,7 @@ mod tests {
                 pinned_id: Some("0".to_owned()),
                 state: InterfaceState::Up,
                 driver: "dummy".to_owned(),
-                mac: "01:23:45:67:89:ab".to_owned(),
+                mac: "01:23:45:67:89:ab".parse().unwrap(),
                 addresses: vec![],
             },
         );
@@ -836,7 +830,7 @@ mod tests {
         let mut options = NetworkInterfacePinningOptions::default();
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), String::new());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), String::new());
 
         let res = options.verify();
         assert!(res.is_err());
@@ -851,7 +845,7 @@ mod tests {
         let mut options = NetworkInterfacePinningOptions::default();
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "a".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "a".to_owned());
 
         let res = options.verify();
         assert!(res.is_err());
@@ -865,7 +859,7 @@ mod tests {
     fn network_interface_pinning_options_fail_on_overlong_name() {
         let mut options = NetworkInterfacePinningOptions::default();
         options.mapping.insert(
-            "ab:cd:ef:12:34:56".to_owned(),
+            "ab:cd:ef:12:34:56".parse().unwrap(),
             "waytoolonginterfacename".to_owned(),
         );
 
@@ -882,10 +876,10 @@ mod tests {
         let mut options = NetworkInterfacePinningOptions::default();
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "nic0".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "nic0".to_owned());
         options
             .mapping
-            .insert("12:34:56:ab:cd:ef".to_owned(), "nic0".to_owned());
+            .insert("12:34:56:ab:cd:ef".parse().unwrap(), "nic0".to_owned());
 
         let res = options.verify();
         assert!(res.is_err());
@@ -903,7 +897,7 @@ mod tests {
         let mut options = NetworkInterfacePinningOptions::default();
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "nic-".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "nic-".to_owned());
 
         let res = options.verify();
         assert!(res.is_err());
@@ -918,7 +912,7 @@ mod tests {
         let mut options = NetworkInterfacePinningOptions::default();
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "0nic".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "0nic".to_owned());
 
         let res = options.verify();
         assert!(res.is_err());
@@ -929,7 +923,7 @@ mod tests {
 
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "_a".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "_a".to_owned());
 
         let res = options.verify();
         assert!(res.is_err());
@@ -944,21 +938,21 @@ mod tests {
         let mut options = NetworkInterfacePinningOptions::default();
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "Nic0".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "Nic0".to_owned());
 
         let res = options.verify();
         assert!(res.is_ok());
 
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "nIc0".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "nIc0".to_owned());
 
         let res = options.verify();
         assert!(res.is_ok());
 
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "nic0".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "nic0".to_owned());
 
         let res = options.verify();
         assert!(res.is_ok());
@@ -969,7 +963,7 @@ mod tests {
         let mut options = NetworkInterfacePinningOptions::default();
         options
             .mapping
-            .insert("ab:cd:ef:12:34:56".to_owned(), "12345".to_owned());
+            .insert("ab:cd:ef:12:34:56".parse().unwrap(), "12345".to_owned());
 
         let res = options.verify();
         assert!(res.is_err());

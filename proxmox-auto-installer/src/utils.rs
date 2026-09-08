@@ -500,7 +500,7 @@ pub fn verify_network_settings(
                     .any(|iface| iface.mac == *mac)
                 {
                     warn!(
-                        "found unknown address '{mac}' (mapped to '{name}') in network interface pinning options"
+                        "found unknown address '{mac:x}' (mapped to '{name}') in network interface pinning options"
                     );
                 }
             }

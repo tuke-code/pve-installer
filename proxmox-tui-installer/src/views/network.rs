@@ -17,12 +17,12 @@ use proxmox_installer_common::{
     options::{NetworkInterfacePinningOptions, NetworkOptions},
     setup::{Interface, NetworkInfo},
 };
-use proxmox_network_types::{fqdn::Fqdn, ip_address::Cidr};
+use proxmox_network_types::{MacAddress, fqdn::Fqdn, ip_address::Cidr};
 
 use super::{CidrAddressEditView, FormView};
 
 struct NetworkViewOptions {
-    selected_mac: String,
+    selected_mac: MacAddress,
     pinning_enabled: bool,
     // For UI purposes, we want to always save the mapping, to save the state
     // between toggling the checkbox
@@ -55,14 +55,8 @@ impl NetworkOptionsView {
         let selected_mac = network_info
             .interfaces
             .get(&options.ifname)
-            .map(|iface| iface.mac.clone())
-            .unwrap_or_else(|| {
-                ifaces
-                    .first()
-                    .expect("at least one network interface")
-                    .mac
-                    .clone()
-            });
+            .map(|iface| iface.mac)
+            .unwrap_or_else(|| ifaces.first().expect("at least one network interface").mac);
 
         let options_ref = Arc::new(Mutex::new(NetworkViewOptions {
             selected_mac,
@@ -309,7 +303,7 @@ impl NetworkOptionsView {
             .on_submit({
                 let options_ref = options_ref.clone();
                 move |_, iface| {
-                    options_ref.lock().expect("unpoisoned lock").selected_mac = iface.mac.clone();
+                    options_ref.lock().expect("unpoisoned lock").selected_mac = iface.mac;
                 }
             });
 
@@ -330,7 +324,7 @@ impl ViewWrapper for NetworkOptionsView {
 }
 
 struct InterfacePinningOptionsView {
-    view: ScrollView<NamedView<FormView<String>>>,
+    view: ScrollView<NamedView<FormView<MacAddress>>>,
 }
 
 impl InterfacePinningOptionsView {
@@ -344,11 +338,11 @@ impl InterfacePinningOptionsView {
         // The low-level installer will skip them anyway.
         let interfaces = interfaces.iter().filter(|iface| iface.pinned_id.is_some());
 
-        let mut form = FormView::<String>::new();
+        let mut form = FormView::<MacAddress>::new();
 
         for iface in interfaces {
             let label = format!(
-                "{} ({}, {}, {})",
+                "{:x} ({}, {}, {})",
                 iface.mac, iface.name, iface.driver, iface.state
             );
 
@@ -366,7 +360,7 @@ impl InterfacePinningOptionsView {
                         .fixed_width(MAX_IFNAME_LEN),
                 );
 
-            form.add_child_with_data(&label, view, iface.mac.clone());
+            form.add_child_with_data(&label, view, iface.mac);
 
             if !iface.addresses.is_empty() {
                 for chunk in iface.addresses.chunks(2) {
@@ -403,7 +397,7 @@ impl InterfacePinningOptionsView {
                 .map(|v| v.get_inner().get_content())
                 .ok_or_else(|| format!("failed to retrieve pinning ID for interface {}", mac))?;
 
-            mapping.insert(mac.clone(), (*name).clone());
+            mapping.insert(*mac, (*name).clone());
         }
 
         let opts = NetworkInterfacePinningOptions { mapping };
@@ -414,5 +408,5 @@ impl InterfacePinningOptionsView {
 }
 
 impl ViewWrapper for InterfacePinningOptionsView {
-    cursive::wrap_impl!(self.view: ScrollView<NamedView<FormView<String>>>);
+    cursive::wrap_impl!(self.view: ScrollView<NamedView<FormView<MacAddress>>>);
 }

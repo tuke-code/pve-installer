@@ -14,8 +14,8 @@ enabled = true
 
 [network.interface-name-pinning.mapping]
 "24:8A:07:1E:05:BC" = "lan0"
-"24:8A:07:1E:05:BD" = "lan1"
-"B4:2E:99:AC:AD:B4" = "mgmt"
+"24:8a:07:1e:05:bd" = "lan1"
+"B4:2e:99:ac:AD:b4" = "mgmt"
 
 [disk-setup]
 filesystem = "ext4"

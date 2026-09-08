@@ -131,7 +131,7 @@ mod tests {
             network_interface_pinning,
             network_interface_pinning_disabled,
             network_interface_pinning_from_answer,
-            network_interface_pinning_uppercase_mac_address,
+            network_interface_pinning_mixed_case_mac_addresses,
             nic_matching,
             no_network,
             specific_nic,

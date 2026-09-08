@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeMap};
 use std::{
     cmp,
     collections::{BTreeMap, HashMap},
@@ -18,7 +18,7 @@ use proxmox_installer_types::{
     BootType, IsoInfo, ProductConfig,
     answer::{BtrfsCompressOption, FilesystemType, ZfsChecksumOption, ZfsCompressOption},
 };
-use proxmox_network_types::Cidr;
+use proxmox_network_types::{Cidr, MacAddress};
 
 /// Paths in the ISO environment containing installer data.
 #[derive(Clone, Deserialize)]
@@ -276,6 +276,31 @@ where
     Ok(result)
 }
 
+/// Leaves out links without an Ethernet MAC address, like InfiniBand ones, instead of failing to
+/// start the installer for them.
+fn deserialize_ethernet_interfaces<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Interface>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let interfaces: BTreeMap<String, serde_json::Value> = Deserialize::deserialize(deserializer)?;
+
+    interfaces
+        .into_iter()
+        .filter(|(_, iface)| {
+            iface["mac"]
+                .as_str()
+                .is_some_and(|mac| mac.parse::<MacAddress>().is_ok())
+        })
+        .map(|(name, iface)| {
+            Interface::deserialize(iface)
+                .map(|iface| (name, iface))
+                .map_err(de::Error::custom)
+        })
+        .collect()
+}
+
 fn serialize_as_display<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -328,7 +353,7 @@ pub struct NetworkInfo {
 
     /// Maps devices to their configuration, if it has a usable configuration.
     /// (Contains no entries for devices with only link-local addresses.)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_ethernet_interfaces")]
     pub interfaces: BTreeMap<String, Interface>,
 
     /// The hostname of this machine, if set by the DHCP server.
@@ -395,7 +420,7 @@ pub struct Interface {
     /// interface name cannot/should not be pinned due to being e.g. a non-physical link.
     pub pinned_id: Option<String>,
 
-    pub mac: String,
+    pub mac: MacAddress,
 
     pub state: InterfaceState,
 
@@ -411,7 +436,7 @@ impl Interface {
     // avoid display trait as this is not the string representation for a serializer
     pub fn render(&self) -> String {
         format!(
-            "{} {} ({}, {})",
+            "{} {} ({:x}, {})",
             self.state.render(),
             self.name,
             self.mac,
@@ -535,9 +560,10 @@ pub struct InstallConfig {
     #[serde(
         default,
         skip_serializing_if = "HashMap::is_empty",
-        deserialize_with = "deserialize_optional_map"
+        deserialize_with = "deserialize_optional_map",
+        serialize_with = "serialize_low_level_mac_address_map"
     )]
-    pub network_interface_pin_map: HashMap<String, String>,
+    pub network_interface_pin_map: HashMap<MacAddress, String>,
 
     pub hostname: String,
     pub domain: String,
@@ -582,4 +608,50 @@ where
 {
     let map: Option<HashMap<K, V>> = Deserialize::deserialize(deserializer)?;
     Ok(map.unwrap_or_default())
+}
+
+/// Serializes a [HashMap] using [MacAddress] as keys, normalizing MAC addresses into their
+/// lower-case format as the low-level installer expects it.
+fn serialize_low_level_mac_address_map<S, V>(
+    map: &HashMap<MacAddress, V>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    V: Serialize,
+{
+    let mut serializer = serializer.serialize_map(Some(map.len()))?;
+    for (mac, v) in map {
+        serializer.serialize_entry(&format!("{mac:x}"), &v)?;
+    }
+    serializer.end()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_info_leaves_out_links_without_ethernet_mac_address() {
+        let network: NetworkInfo = serde_json::from_str(
+            r#"{
+                "dns": {},
+                "routes": {},
+                "interfaces": {
+                    "eno1": {
+                        "name": "eno1", "index": 2, "pinned_id": "0", "mac": "b4:2e:99:ac:ad:b4",
+                        "state": "UP", "driver": "igb"
+                    },
+                    "ib0": {
+                        "name": "ib0", "index": 3, "pinned_id": "1",
+                        "mac": "80:00:02:08:fe:80:00:00:00:00:00:00:00:02:c9:03:00:0e:1a:91",
+                        "state": "DOWN", "driver": "mlx4_core"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(network.interfaces.keys().collect::<Vec<_>>(), ["eno1"]);
+    }
 }
