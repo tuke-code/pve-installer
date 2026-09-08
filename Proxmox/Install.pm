@@ -673,7 +673,8 @@ sub prepare_grub_efi_boot_esp {
             # without a shim package installed (no signed shim exists for arm64 yet) grub-install
             # deploys only the plain grub image, so use that as the removable-media default loader
             $shim_src = $run_env->{arch} eq 'arm64' ? 'grubaa64.efi' : 'grubx64.efi';
-            warn "no shim binary found, using '$shim_src' as removable-media default boot loader\n";
+            warn
+                "no shim binary found, using '$shim_src' as removable-media default boot loader\n";
         }
         syscmd(
             "mv $targetdir/boot/efi/EFI/BOOT/$shim_src $targetdir/boot/efi/EFI/BOOT/$boot_dst")
