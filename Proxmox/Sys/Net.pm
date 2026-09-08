@@ -453,6 +453,17 @@ sub validate_link_pin_map : prototype($) {
     }
 }
 
+# links sharing a MAC address cannot be told apart by it, the first physical one by name stands for
+# all of them
+sub physical_link_by_mac : prototype($$) {
+    my ($interfaces, $mac) = @_;
+
+    $mac = lc($mac);
+    my ($link) = sort { $a->{name} cmp $b->{name} }
+        grep { defined($_->{pinned_id}) && $_->{mac} eq $mac } values $interfaces->%*;
+    return $link;
+}
+
 my @BOND_MODES = qw(balance-rr active-backup balance-xor broadcast 802.3ad balance-tlb balance-alb);
 my @BOND_HASH_POLICIES = qw(layer2 layer2+3 layer3+4);
 

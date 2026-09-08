@@ -819,21 +819,61 @@ sub generate_ifupdown2_config {
 
     my $ifaces = "auto lo\niface lo inet loopback\n\n";
 
+    my @mngmt_links = ($ethdev);
+
+    my $bond_enabled = Proxmox::Install::Config::get_mngmt_bond_enabled();
+    my $bond_config = '';
+    if ($bond_enabled) {
+        my $bond_opts = Proxmox::Install::Config::get_mngmt_bond_opt();
+        my $mode = $bond_opts->{mode};
+
+        my $get_link_name = sub {
+            my ($mac) = @_;
+            $mac = lc($mac);
+
+            return $netif_pin_map->{$mac}
+                if defined($netif_pin_map) && defined($netif_pin_map->{$mac});
+
+            my $link = Proxmox::Sys::Net::physical_link_by_mac($interfaces, $mac)
+                or die "no network interface with MAC address '$mac' found for the bond\n";
+            return $link->{name};
+        };
+
+        # sorted as Proxmox VE saves them, where the first one enslaved sets the bond's MAC address
+        @mngmt_links = sort map { $get_link_name->($_) } $bond_opts->{members}->@*;
+
+        # same order and defaults as the Proxmox VE network API writes them
+        $bond_config = "\tbond-slaves " . join(' ', @mngmt_links) . "\n";
+        $bond_config .= "\tbond-miimon 100\n";
+        $bond_config .= "\tbond-mode $mode\n";
+        $bond_config .= "\tbond-xmit-hash-policy $bond_opts->{hash_policy}\n"
+            if $mode eq '802.3ad' || $mode eq 'balance-xor';
+        $bond_config .= "\tbond-primary " . $get_link_name->($bond_opts->{primary_interface}) . "\n"
+            if $mode eq 'active-backup' && defined($bond_opts->{primary_interface});
+
+        $ethdev = 'bond0';
+    }
+
     # iproute2 omits the gateway and protocol keys for some routes; route devices are original
-    # kernel interface names, while $ethdev can be the pinned one
+    # kernel interface names, while the management links can be pinned ones
+    my %is_mngmt_link = map { $_ => 1 } @mngmt_links;
     my $gateways6 = $run_env->{network}->{routes}->{gateways6} // [];
     my $is_gateway6_from_ra = grep {
         my $dev = $_->{dev} // '';
         if (defined($netif_pin_map) && defined($interfaces->{$dev})) {
             $dev = $netif_pin_map->{ $interfaces->{$dev}->{mac} } // $dev;
         }
-        $dev eq $ethdev
+        $is_mngmt_link{$dev}
             && ($_->{gateway} // '') eq $gateway
             && ($_->{protocol} // '') eq 'ra';
     } $gateways6->@*;
 
     if ($iso_env->{cfg}->{bridged_network}) {
-        $ifaces .= "iface $ethdev $ntype manual\n";
+        if ($bond_enabled) {
+            $ifaces .= "auto $ethdev\niface $ethdev $ntype manual\n$bond_config";
+        } else {
+            $ifaces .= "iface $ethdev $ntype manual\n";
+        }
 
         $ifaces .=
             "\nauto vmbr0\niface vmbr0 $ntype static\n"
@@ -850,6 +890,8 @@ sub generate_ifupdown2_config {
         if (!$is_gateway6_from_ra) {
             $ifaces .= "\tgateway $gateway\n";
         }
+
+        $ifaces .= $bond_config;
     }
 
     foreach my $iface (sort keys $interfaces->%*) {
@@ -862,7 +904,9 @@ sub generate_ifupdown2_config {
 
         next if $name eq $ethdev;
 
-        $ifaces .= "\niface $name $ntype manual\n";
+        # as Proxmox VE writes them, ifupdown2 then also keeps them up if removed from the bond
+        my $auto = $bond_enabled && $is_mngmt_link{$name} ? "auto $name\n" : '';
+        $ifaces .= "\n${auto}iface $name $ntype manual\n";
     }
 
     $ifaces .= "\n\nsource /etc/network/interfaces.d/*\n";
