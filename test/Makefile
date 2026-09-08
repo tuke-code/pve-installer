@@ -5,7 +5,7 @@ export PERLLIB=..
 .PHONY: check
 check: test-zfs-arc-max test-run-command test-parse-fqdn test-ui2-stdio \
        test-zfs-get-pool-list test-parse-kernel-cmdline \
-       test-validate-link-pin-map
+       test-validate-link-pin-map test-generate-ifupdown2-config
 
 .PHONY: test-zfs-arc-max
 test-zfs-arc-max:
@@ -34,3 +34,7 @@ test-parse-kernel-cmdline:
 .PHONY: test-validate-link-pin-map
 test-validate-link-pin-map:
 	./validate-link-pin-map.pl
+
+.PHONY: test-generate-ifupdown2-config
+test-generate-ifupdown2-config:
+	./generate-ifupdown2-config.pl

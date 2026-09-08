@@ -798,6 +798,74 @@ my sub setup_proxmox_first_boot_service {
     }
 }
 
+sub generate_ifupdown2_config {
+    my $run_env = Proxmox::Install::RunEnv::get();
+    my $iso_env = Proxmox::Install::ISOEnv::get();
+
+    my $ip_version = Proxmox::Install::Config::get_ip_version();
+    my $ntype = $ip_version == 4 ? 'inet' : 'inet6';
+
+    my $interfaces = $run_env->{network}->{interfaces};
+    my $ethdev = Proxmox::Install::Config::get_mngmt_nic();
+    my $cidr = Proxmox::Install::Config::get_cidr();
+    my $gateway = Proxmox::Install::Config::get_gateway();
+
+    my $netif_pin_map = Proxmox::Install::Config::get_network_interface_pin_map();
+
+    # frontends may pass the original kernel name of an interface that gets pinned
+    if (defined($netif_pin_map) && defined($interfaces->{$ethdev})) {
+        $ethdev = $netif_pin_map->{ $interfaces->{$ethdev}->{mac} } // $ethdev;
+    }
+
+    my $ifaces = "auto lo\niface lo inet loopback\n\n";
+
+    # iproute2 omits the gateway and protocol keys for some routes; route devices are original
+    # kernel interface names, while $ethdev can be the pinned one
+    my $gateways6 = $run_env->{network}->{routes}->{gateways6} // [];
+    my $is_gateway6_from_ra = grep {
+        my $dev = $_->{dev} // '';
+        if (defined($netif_pin_map) && defined($interfaces->{$dev})) {
+            $dev = $netif_pin_map->{ $interfaces->{$dev}->{mac} } // $dev;
+        }
+        $dev eq $ethdev
+            && ($_->{gateway} // '') eq $gateway
+            && ($_->{protocol} // '') eq 'ra';
+    } $gateways6->@*;
+
+    if ($iso_env->{cfg}->{bridged_network}) {
+        $ifaces .= "iface $ethdev $ntype manual\n";
+
+        $ifaces .=
+            "\nauto vmbr0\niface vmbr0 $ntype static\n"
+            . "\taddress $cidr\n"
+            . "\tgateway $gateway\n"
+            . "\tbridge-ports $ethdev\n"
+            . "\tbridge-stp off\n"
+            . "\tbridge-fd 0\n";
+    } else {
+        $ifaces .= "auto $ethdev\n" . #
+            "iface $ethdev $ntype static\n" . #
+            "\taddress $cidr\n";
+
+        if (!$is_gateway6_from_ra) {
+            $ifaces .= "\tgateway $gateway\n";
+        }
+    }
+
+    foreach my $iface (sort keys $interfaces->%*) {
+        my $if = $interfaces->{$iface};
+        my $name = defined($netif_pin_map) ? $netif_pin_map->{ $if->{mac} } : $if->{name};
+
+        next if $name eq $ethdev;
+
+        $ifaces .= "\niface $name $ntype manual\n";
+    }
+
+    $ifaces .= "\n\nsource /etc/network/interfaces.d/*\n";
+
+    return $ifaces;
+}
+
 sub extract_data {
     my $iso_env = Proxmox::Install::ISOEnv::get();
     my $run_env = Proxmox::Install::RunEnv::get();
@@ -1138,17 +1206,6 @@ sub extract_data {
 
         syscmd("/bin/hostname $hostname") if !is_test_mode();
 
-        # configure interfaces
-
-        my $ifaces = "auto lo\niface lo inet loopback\n\n";
-
-        my $ip_version = Proxmox::Install::Config::get_ip_version();
-        my $ntype = $ip_version == 4 ? 'inet' : 'inet6';
-
-        my $ethdev = Proxmox::Install::Config::get_mngmt_nic();
-        my $cidr = Proxmox::Install::Config::get_cidr();
-        my $gateway = Proxmox::Install::Config::get_gateway();
-
         # configure pinned names for all network interfaces, if enabled
 
         my $netif_pin_map = Proxmox::Install::Config::get_network_interface_pin_map();
@@ -1178,64 +1235,12 @@ sub extract_data {
                     "$targetdir/usr/local/lib/systemd/network/50-pmx-${pinned_name}.link",
                     $link_file_content,
                 );
-
-                # ensure that we use the correct interface name when writing out
-                # /etc/network/interfaces below - just in case the interface name
-                # is pinned and get_mngmt_nic() returned the original interface name.
-                # better be safe than sorry
-                if ($ethdev eq $ifname) {
-                    $ethdev = $pinned_name;
-                }
             }
         }
 
-        my $interfaces = $run_env->{network}->{interfaces};
+        # configure interfaces
 
-        # iproute2 omits the gateway and protocol keys for some routes; route devices are original
-        # kernel interface names, while $ethdev can be the pinned one
-        my $gateways6 = $run_env->{network}->{routes}->{gateways6} // [];
-        my $is_gateway6_from_ra = grep {
-            my $dev = $_->{dev} // '';
-            if (defined($netif_pin_map) && defined($interfaces->{$dev})) {
-                $dev = $netif_pin_map->{ $interfaces->{$dev}->{mac} } // $dev;
-            }
-            $dev eq $ethdev
-                && ($_->{gateway} // '') eq $gateway
-                && ($_->{protocol} // '') eq 'ra';
-        } $gateways6->@*;
-
-        if ($iso_env->{cfg}->{bridged_network}) {
-            $ifaces .= "iface $ethdev $ntype manual\n";
-
-            $ifaces .=
-                "\nauto vmbr0\niface vmbr0 $ntype static\n"
-                . "\taddress $cidr\n"
-                . "\tgateway $gateway\n"
-                . "\tbridge-ports $ethdev\n"
-                . "\tbridge-stp off\n"
-                . "\tbridge-fd 0\n";
-        } else {
-            $ifaces .= "auto $ethdev\n" . #
-                "iface $ethdev $ntype static\n" . #
-                "\taddress $cidr\n";
-
-            if (!$is_gateway6_from_ra) {
-                $ifaces .= "\tgateway $gateway\n";
-            }
-        }
-
-        foreach my $iface (sort keys $interfaces->%*) {
-            my $if = $interfaces->{$iface};
-            my $name = defined($netif_pin_map) ? $netif_pin_map->{ $if->{mac} } : $if->{name};
-
-            next if $name eq $ethdev;
-
-            $ifaces .= "\niface $name $ntype manual\n";
-        }
-
-        $ifaces .= "\n\nsource /etc/network/interfaces.d/*\n";
-
-        file_write_all("$targetdir/etc/network/interfaces", $ifaces);
+        file_write_all("$targetdir/etc/network/interfaces", generate_ifupdown2_config());
 
         # configure dns
 
