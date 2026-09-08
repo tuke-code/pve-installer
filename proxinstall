@@ -85,7 +85,9 @@ my @steps = (
 );
 
 # GUI global variables
-my $gtk_state = {};
+my $gtk_state = {
+    network_bonding_enabled => 0,
+};
 
 my $target_hds; # only for the summary view
 
@@ -349,7 +351,38 @@ my $create_basic_grid = sub {
     return $grid;
 };
 
+# takes an array ref of rows with [$label_text, $widget, $suffix_label] array refs as columns
+# $suffix_label is optional
+my $create_label_widget_grid = sub {
+    my ($labeled_widgets) = @_;
+
+    my $grid = &$create_basic_grid();
+
+    for (my $row = 0; $row < scalar($labeled_widgets->@*); $row++) {
+        my ($label_text, $widget, $suffix_label) = $labeled_widgets->[$row]->@*;
+
+        my $label = Gtk3::Label->new($label_text);
+        $label->set_visible(1);
+        $label->set_xalign(1.0);
+        $grid->attach($label, 0, $row, 1, 1);
+
+        $widget->set_visible(1);
+        $grid->attach($widget, 1, $row, 1, 1);
+
+        if ($suffix_label) {
+            my $suffix_label = Gtk3::Label->new($suffix_label);
+            $suffix_label->set_visible(1);
+            $suffix_label->set_xalign(1.0);
+            $grid->attach($suffix_label, 2, $row, 1, 1);
+        }
+    }
+
+    return $grid;
+};
+
 my sub create_network_interface_pin_frame {
+    my ($on_enable_changed) = @_;
+
     my $frame = Gtk3::Frame->new('Interface Name Pinning');
 
     my $vbox = Gtk3::Box->new('vertical', 5);
@@ -417,6 +450,8 @@ my sub create_network_interface_pin_frame {
 
             $gtk_state->{network_pinning_enabled} = $active;
             $set_sensitive->($active);
+
+            $on_enable_changed->($active);
         },
     );
 
@@ -431,6 +466,168 @@ my sub create_network_interface_pin_frame {
     };
 
     return ($frame, $on_done);
+}
+
+my sub create_network_bond_frame {
+    my $frame = Gtk3::Frame->new('Management Bond');
+
+    my $vbox = Gtk3::Box->new('vertical', 5);
+    $frame->add($vbox);
+    $vbox->set_margin_start(10);
+    $vbox->set_margin_end(10);
+    $vbox->set_margin_top(5);
+    $vbox->set_margin_bottom(5);
+
+    my $enable_checkbox = Gtk3::CheckButton->new('Enable bonding for the management interface');
+    $enable_checkbox->set_active($gtk_state->{network_bonding_enabled});
+    $vbox->pack_start($enable_checkbox, 1, 0, 5);
+
+    my $bond_opts = Proxmox::Install::Config::get_mngmt_bond_opt();
+    my $interfaces = Proxmox::Install::RunEnv::get()->{network}->{interfaces};
+
+    my $get_ifname = sub {
+        my ($iface) = @_;
+
+        return $iface->{name} if !$gtk_state->{network_pinning_enabled};
+
+        my $mapping = Proxmox::Install::Config::get_network_interface_pin_map();
+        return $mapping->{ $iface->{mac} } // $iface->{name};
+    };
+
+    my $mode_combo = Gtk3::ComboBoxText->new();
+    for my $mode (Proxmox::Sys::Net::bond_modes()) {
+        $mode_combo->append($mode, $mode eq '802.3ad' ? 'LACP (802.3ad)' : $mode);
+    }
+    $mode_combo->set_active_id($bond_opts->{mode});
+
+    my $hash_policy_combo = Gtk3::ComboBoxText->new();
+    for my $policy (Proxmox::Sys::Net::bond_hash_policies()) {
+        $hash_policy_combo->append($policy, $policy);
+    }
+    $hash_policy_combo->set_active_id($bond_opts->{hash_policy});
+
+    my $primary_if_input = Gtk3::Entry->new();
+    $primary_if_input->set_tooltip_text('Name of the primary interface to set on the bond.');
+
+    if (defined(my $primary_mac = $bond_opts->{primary_interface})) {
+        my $primary = Proxmox::Sys::Net::physical_link_by_mac($interfaces, $primary_mac);
+        $primary_if_input->set_text($get_ifname->($primary)) if defined($primary);
+    }
+
+    my $opts_grid = $create_label_widget_grid->([
+        ['Bond Mode', $mode_combo],
+        ['Hash Policy', $hash_policy_combo],
+        ['Primary Interface', $primary_if_input],
+    ]);
+
+    my $set_option_sensitive = sub {
+        my ($widget, $active) = @_;
+
+        my ($row) = $opts_grid->child_get($widget, 'top-attach');
+        $opts_grid->get_child_at(0, $row)->set_sensitive($active);
+        $widget->set_sensitive($active);
+    };
+
+    my $on_mode_changed = sub {
+        my $mode = $mode_combo->get_active_id();
+        $set_option_sensitive->(
+            $hash_policy_combo,
+            $mode eq '802.3ad' || $mode eq 'balance-xor',
+        );
+        $set_option_sensitive->($primary_if_input, $mode eq 'active-backup');
+    };
+    $mode_combo->signal_connect(changed => $on_mode_changed);
+
+    $vbox->pack_start($opts_grid, 0, 0, 5);
+
+    my $if_label = Gtk3::Label->new('Bond Interfaces:');
+    $if_label->set_xalign(0.0);
+    $if_label->set_margin_top(5);
+    $vbox->pack_start($if_label, 0, 0, 0);
+
+    my $checkboxes = {};
+    my $member_ifaces = {};
+    for my $ifname (sort keys $interfaces->%*) {
+        my $iface = $interfaces->{$ifname};
+        # members are identified by MAC address, so links sharing one cannot be told apart
+        next if !defined($iface->{pinned_id}) || defined($checkboxes->{ $iface->{mac} });
+
+        # without a label, as one passed here would be parsed for mnemonics, eating underscores
+        my $checkbox = Gtk3::CheckButton->new();
+
+        my $is_member = grep { $_ eq $iface->{mac} } $bond_opts->{members}->@*;
+        $checkbox->set_active($is_member);
+
+        $vbox->pack_start($checkbox, 0, 0, 5);
+        $checkboxes->{ $iface->{mac} } = $checkbox;
+        $member_ifaces->{ $iface->{mac} } = $iface;
+    }
+
+    my $set_sensitive = sub {
+        my ($active) = @_;
+
+        $opts_grid->foreach(sub {
+            $_[0]->set_sensitive($active);
+        });
+
+        $on_mode_changed->() if $active;
+
+        $if_label->set_sensitive($active);
+        for my $cb (values %$checkboxes) {
+            $cb->set_sensitive($active);
+        }
+    };
+    $set_sensitive->($gtk_state->{network_bonding_enabled});
+
+    $enable_checkbox->signal_connect(
+        toggled => sub {
+            my $active = !!$enable_checkbox->get_active();
+
+            $gtk_state->{network_bonding_enabled} = $active;
+            $set_sensitive->($active);
+        },
+    );
+
+    my $refresh_if_names = sub {
+        for my $iface (values $member_ifaces->%*) {
+            my $name = $get_ifname->($iface);
+            my $label = "$name ($iface->{mac}, $iface->{driver}, $iface->{state})";
+            $checkboxes->{ $iface->{mac} }->set_label($label);
+        }
+    };
+    $refresh_if_names->();
+
+    my $on_done = sub {
+        # keep the options if disabled, they are only unset before starting the installation
+        return if !$enable_checkbox->get_active();
+
+        my @members = grep { $checkboxes->{$_}->get_active() } sort keys $checkboxes->%*;
+        die "at least 2 member interfaces are required for setting up a bond\n"
+            if scalar(@members) < 2;
+
+        my $mode = $mode_combo->get_active_id();
+
+        my $primary_mac;
+        my $primary_name = $primary_if_input->get_text();
+        if ($mode eq 'active-backup' && length($primary_name) > 0) {
+            ($primary_mac) =
+                map { $_->{mac} }
+                grep { $get_ifname->($_) eq $primary_name } values $interfaces->%*;
+
+            die "unknown primary interface '$primary_name'\n" if !defined($primary_mac);
+            die "primary interface '$primary_name' is not a member of the bond\n"
+                if !grep { $_ eq $primary_mac } @members;
+        }
+
+        Proxmox::Install::Config::set_mngmt_bond_opts({
+            members => \@members,
+            mode => $mode,
+            hash_policy => $hash_policy_combo->get_active_id(),
+            primary_interface => $primary_mac,
+        });
+    };
+
+    return ($frame, $refresh_if_names, $on_done);
 }
 
 my sub create_network_advanced_options_view {
@@ -451,16 +648,21 @@ my sub create_network_advanced_options_view {
 
     my $hbox = Gtk3::Box->new('vertical', 0);
 
-    my ($pin_frame, $pin_on_done) = create_network_interface_pin_frame();
+    my ($bond_frame, $bond_refresh, $bond_on_done) = create_network_bond_frame();
+    my ($pin_frame, $pin_on_done) = create_network_interface_pin_frame($bond_refresh);
 
     $hbox->pack_start($pin_frame, 0, 0, 10);
+    $hbox->pack_start($bond_frame, 0, 0, 10);
 
     $scrolled_window->add($hbox);
     $content->pack_start($scrolled_window, 1, 1, 10);
 
     $dialog->signal_connect(
         response => sub {
-            eval { $pin_on_done->(); };
+            eval {
+                $pin_on_done->();
+                $bond_on_done->();
+            };
             if ($@) {
                 Proxmox::UI::message($@, $dialog);
                 return;
@@ -535,7 +737,28 @@ sub create_ipconf_view {
     $device_cb->pack_start($cell, 0);
     $device_cb->add_attribute($cell, 'text', 1);
 
+    my $device_bond_label = Gtk3::Label->new('bond0');
+    $device_bond_label->set_justify('center');
+    $device_bond_label->set_margin_top(5);
+    $device_bond_label->set_margin_bottom(5);
+
     my $refresh_device_cb = sub {
+        my $bond_active = $gtk_state->{network_bonding_enabled};
+        if ($bond_active) {
+            my $bond_opts = Proxmox::Install::Config::get_mngmt_bond_opt();
+
+            $device_bond_label->set_text(
+                "bond0 (mode: $bond_opts->{mode}, "
+                    . scalar($bond_opts->{members}->@*)
+                    . " members)",
+            );
+        }
+
+        $device_cb->set_visible(!$bond_active);
+        $device_cb->set_no_show_all($bond_active);
+        $device_bond_label->set_visible($bond_active);
+        $device_bond_label->set_no_show_all(!$bond_active);
+
         # clear all entries and re-add them with their new names
         my $active = $device_cb->get_active();
         $device_model->clear();
@@ -673,6 +896,7 @@ sub create_ipconf_view {
 
     $grid->attach($label, 0, 0, 1, 1);
     $grid->attach($device_cb, 1, 0, 2, 1);
+    $grid->attach($device_bond_label, 1, 0, 2, 1);
 
     my $fqdn = Proxmox::Install::Config::get_fqdn();
     my $hostname = $run_env->{network}->{hostname} || $iso_env->{product};
@@ -796,11 +1020,28 @@ sub create_ack_view {
     my $country = Proxmox::Install::Config::get_country();
 
     my $mngmt_nic = Proxmox::Install::Config::get_mngmt_nic();
-    my $iface = Proxmox::Install::RunEnv::get('network')->{interfaces}->{$mngmt_nic};
-
+    my $all_ifaces = Proxmox::Install::RunEnv::get('network')->{interfaces};
+    my $iface = $all_ifaces->{$mngmt_nic};
     my $nic_mapping = Proxmox::Install::Config::get_network_interface_pin_map();
-    my $interface =
-        $gtk_state->{network_pinning_enabled} ? $nic_mapping->{ $iface->{mac} } : $iface->{name};
+
+    my $bond_opts = Proxmox::Install::Config::get_mngmt_bond_opt();
+
+    my $interface;
+    if ($gtk_state->{network_bonding_enabled}) {
+        my @member_names = map {
+            $gtk_state->{network_pinning_enabled}
+                ? $nic_mapping->{$_}
+                : Proxmox::Sys::Net::physical_link_by_mac($all_ifaces, $_)->{name}
+        } $bond_opts->{members}->@*;
+
+        my $members = join(' | ', @member_names);
+        $interface = "bond0 (mode: $bond_opts->{mode}, members: $members)";
+    } else {
+        $interface =
+            $gtk_state->{network_pinning_enabled}
+            ? $nic_mapping->{ $iface->{mac} }
+            : $iface->{name};
+    }
 
     my %config_values = (
         __target_hd__ => join(' | ', $target_hds->@*),
@@ -838,10 +1079,17 @@ sub create_ack_view {
     set_next(
         undef,
         sub {
-            # before starting the install, unset the name pinning map if it
-            # is disabled
+            # before starting the install, unset the name pinning map and the bond if they are
+            # disabled
             if (!$gtk_state->{network_pinning_enabled}) {
                 Proxmox::Install::Config::set_network_interface_pin_map(undef);
+            }
+            if (!$gtk_state->{network_bonding_enabled}) {
+                Proxmox::Install::Config::set_mngmt_bond_opts({
+                    Proxmox::Install::Config::get_mngmt_bond_opt()->%*,
+                    members => [],
+                    primary_interface => undef,
+                });
             }
 
             $step_number++;
@@ -1215,35 +1463,6 @@ my $target_hd_combo;
 my $target_hd_label;
 
 my $hdoption_first_setup = 1;
-
-# takes an array ref of rows with [$label_text, $widget, $suffix_label] array refs as columns
-# $suffix_label is optional
-my $create_label_widget_grid = sub {
-    my ($labeled_widgets) = @_;
-
-    my $grid = &$create_basic_grid();
-
-    for (my $row = 0; $row < scalar($labeled_widgets->@*); $row++) {
-        my ($label_text, $widget, $suffix_label) = $labeled_widgets->[$row]->@*;
-
-        my $label = Gtk3::Label->new($label_text);
-        $label->set_visible(1);
-        $label->set_xalign(1.0);
-        $grid->attach($label, 0, $row, 1, 1);
-
-        $widget->set_visible(1);
-        $grid->attach($widget, 1, $row, 1, 1);
-
-        if ($suffix_label) {
-            my $suffix_label = Gtk3::Label->new($suffix_label);
-            $suffix_label->set_visible(1);
-            $suffix_label->set_xalign(1.0);
-            $grid->attach($suffix_label, 2, $row, 1, 1);
-        }
-    }
-
-    return $grid;
-};
 
 # only relevant for raid with its multipl diskX to diskY mappings.
 my $get_selected_hdsize = sub {
