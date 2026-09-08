@@ -1,8 +1,9 @@
+use anyhow::{Result, anyhow, bail};
 use cursive::{
     Cursive, View,
     view::{Nameable, Resizable, ViewWrapper},
     views::{
-        Button, Checkbox, Dialog, DummyView, EditView, LinearLayout, NamedView, ResizedView,
+        Button, Checkbox, Dialog, DummyView, EditView, LinearLayout, NamedView, Panel, ResizedView,
         ScrollView, SelectView, TextView,
     },
 };
@@ -22,10 +23,9 @@ use proxmox_network_types::{MacAddress, fqdn::Fqdn, ip_address::Cidr};
 use super::{CidrAddressEditView, FormView};
 
 struct NetworkViewOptions {
-    selected_mac: MacAddress,
     pinning_enabled: bool,
-    // For UI purposes, we want to always save the mapping, to save the state
-    // between toggling the checkbox
+    interfaces: Vec<Interface>,
+    // kept while disabled, so that toggling the checkbox does not reset them
     pinning_options: NetworkInterfacePinningOptions,
 }
 
@@ -40,32 +40,34 @@ pub struct NetworkOptionsView {
 }
 
 impl NetworkOptionsView {
-    const PINNING_OPTIONS_BUTTON_NAME: &str = "network-pinning-options-button";
+    const FORM_VIEW_NAME: &str = "network-management-form";
     const MGMT_IFNAME_SELECTVIEW_NAME: &str = "network-management-ifname-selectview";
+    const ADVANCED_OPTIONS_BUTTON_NAME: &str = "network-advanced-options-button";
+
+    const INTERFACE_PINNING_VIEW_NAME: &str = "network-name-pinning-view";
 
     pub fn new(options: &NetworkOptions, network_info: &NetworkInfo) -> Self {
-        let mut ifaces = network_info
+        let mut interfaces = network_info
             .interfaces
             .values()
-            .collect::<Vec<&Interface>>();
+            .cloned()
+            .collect::<Vec<Interface>>();
 
         // First, sort interfaces by their link state and then name
-        ifaces.sort_unstable_by_key(|x| (&x.state, &x.name));
+        interfaces.sort_unstable_by(|a, b| (&a.state, &a.name).cmp(&(&b.state, &b.name)));
 
         let selected_mac = network_info
             .interfaces
             .get(&options.ifname)
-            .map(|iface| iface.mac)
-            .unwrap_or_else(|| ifaces.first().expect("at least one network interface").mac);
+            .map(|iface| iface.mac);
 
         let options_ref = Arc::new(Mutex::new(NetworkViewOptions {
-            selected_mac,
             pinning_enabled: options.pinning_opts.is_some(),
+            interfaces,
             pinning_options: options.pinning_opts.clone().unwrap_or_default(),
         }));
 
-        let iface_selection =
-            Self::build_mgmt_ifname_selectview(ifaces.clone(), options_ref.clone());
+        let iface_selection = Self::build_mgmt_ifname_selectview(options_ref.clone(), selected_mac);
 
         let form = FormView::<()>::new()
             .child(
@@ -89,36 +91,13 @@ impl NetworkOptionsView {
                 EditView::new().content(options.dns_server.to_string()),
             );
 
-        let pinning_checkbox = LinearLayout::horizontal()
-            .child(Checkbox::new().checked().on_change({
-                let ifaces = ifaces
-                    .iter()
-                    .map(|iface| (*iface).clone())
-                    .collect::<Vec<Interface>>();
-                let options_ref = options_ref.clone();
-                move |siv, enable_pinning| {
-                    siv.call_on_name(Self::PINNING_OPTIONS_BUTTON_NAME, {
-                        let options_ref = options_ref.clone();
-                        move |view: &mut Button| {
-                            view.set_enabled(enable_pinning);
-
-                            options_ref.lock().expect("unpoisoned lock").pinning_enabled =
-                                enable_pinning;
-                        }
-                    });
-
-                    Self::refresh_ifname_selectview(siv, &ifaces, options_ref.clone());
-                }
-            }))
-            .child(TextView::new(" Pin network interface names").no_wrap())
+        let advanced_options = LinearLayout::horizontal()
             .child(DummyView.full_width())
             .child(
-                Button::new("Pinning options", {
+                Button::new("Advanced options", {
                     let options_ref = options_ref.clone();
-                    let network_info = network_info.clone();
                     move |siv| {
-                        let mut view =
-                            Self::custom_name_mapping_view(&network_info, options_ref.clone());
+                        let mut view = Self::advanced_options_view(options_ref.clone());
 
                         // Pre-compute the child's layout, since it might depend on the size. Without this,
                         // the view will be empty until focused.
@@ -128,13 +107,13 @@ impl NetworkOptionsView {
                         siv.add_layer(view);
                     }
                 })
-                .with_name(Self::PINNING_OPTIONS_BUTTON_NAME),
+                .with_name(Self::ADVANCED_OPTIONS_BUTTON_NAME),
             );
 
         let view = LinearLayout::vertical()
-            .child(form)
+            .child(form.with_name(Self::FORM_VIEW_NAME))
             .child(DummyView.full_width())
-            .child(pinning_checkbox);
+            .child(advanced_options);
 
         Self {
             view,
@@ -145,9 +124,10 @@ impl NetworkOptionsView {
     pub fn get_values(&mut self) -> Result<NetworkOptions, String> {
         let form = self
             .view
-            .get_child(0)
-            .and_then(|v| v.downcast_ref::<FormView>())
-            .ok_or("failed to retrieve network options form")?;
+            .get_child_mut(0)
+            .and_then(|v| v.downcast_mut::<NamedView<FormView>>())
+            .ok_or("failed to retrieve network options form")?
+            .get_mut();
 
         let iface = form
             .get_value::<NamedView<SelectView<Interface>>, _>(0)
@@ -210,83 +190,79 @@ impl NetworkOptionsView {
         }
     }
 
-    fn custom_name_mapping_view(
-        network_info: &NetworkInfo,
-        options_ref: NetworkViewOptionsRef,
-    ) -> impl View {
-        const DIALOG_NAME: &str = "network-interface-name-pinning-dialog";
+    fn advanced_options_view(options_ref: NetworkViewOptionsRef) -> impl View {
+        let inner = ScrollView::new(
+            LinearLayout::vertical().child(Panel::new(
+                InterfacePinningOptionsView::new(options_ref.clone())
+                    .with_name(Self::INTERFACE_PINNING_VIEW_NAME),
+            )),
+        );
 
-        let mut interfaces = network_info
-            .interfaces
-            .values()
-            .collect::<Vec<&Interface>>();
-
-        interfaces.sort_by(|a, b| (&a.state, &a.name).cmp(&(&b.state, &b.name)));
-
-        Dialog::around(InterfacePinningOptionsView::new(
-            &interfaces,
-            options_ref.clone(),
-        ))
-        .title("Interface Name Pinning Options")
-        .button("Ok", {
-            let interfaces = interfaces
-                .iter()
-                .map(|v| (*v).clone())
-                .collect::<Vec<Interface>>();
-            move |siv| {
-                let options = siv
-                    .call_on_name(DIALOG_NAME, |view: &mut Dialog| {
-                        view.get_content_mut()
-                            .downcast_mut::<InterfacePinningOptionsView>()
-                            .map(InterfacePinningOptionsView::get_values)
-                    })
-                    .flatten();
-
-                let options = match options {
-                    Some(Ok(options)) => options,
-                    Some(Err(err)) => {
-                        siv.add_layer(Dialog::info(err));
-                        return;
+        Dialog::around(inner)
+            .title("Advanced network options")
+            .button("Ok", {
+                move |siv| {
+                    match Self::get_view_values(siv, options_ref.clone()) {
+                        Ok(pin_opts) => {
+                            siv.pop_layer();
+                            let options = &mut options_ref.lock().expect("unpoisoned lock");
+                            options.pinning_options = pin_opts;
+                        }
+                        Err(err) => {
+                            siv.add_layer(Dialog::info(err.to_string()));
+                            return;
+                        }
                     }
-                    None => {
-                        siv.add_layer(Dialog::info(
-                            "Failed to retrieve network interface name pinning options view",
-                        ));
-                        return;
-                    }
-                };
 
-                siv.pop_layer();
-                options_ref.lock().expect("unpoisoned lock").pinning_options = options;
-
-                Self::refresh_ifname_selectview(siv, &interfaces, options_ref.clone());
-            }
-        })
-        .with_name(DIALOG_NAME)
-        .max_size((80, 40))
+                    Self::refresh_ifname_selectview(siv, options_ref.clone());
+                }
+            })
+            .max_size((80, 40))
     }
 
-    fn refresh_ifname_selectview(
+    fn get_view_values(
         siv: &mut Cursive,
-        ifaces: &[Interface],
         options_ref: NetworkViewOptionsRef,
-    ) {
+    ) -> Result<NetworkInterfacePinningOptions> {
+        let pinning_enabled = options_ref.lock().expect("unpoisoned lock").pinning_enabled;
+
+        // disabled options may be left empty or invalid, they keep their previous values
+        let pin_opts = if pinning_enabled {
+            siv.call_on_name(
+                Self::INTERFACE_PINNING_VIEW_NAME,
+                InterfacePinningOptionsView::get_values,
+            )
+            .unwrap_or_else(|| bail!("failed to retrieve network interface name pinning options"))?
+        } else {
+            options_ref
+                .lock()
+                .expect("unpoisoned lock")
+                .pinning_options
+                .clone()
+        };
+
+        Ok(pin_opts)
+    }
+
+    fn refresh_ifname_selectview(siv: &mut Cursive, options_ref: NetworkViewOptionsRef) {
         siv.call_on_name(
             Self::MGMT_IFNAME_SELECTVIEW_NAME,
             |view: &mut SelectView<Interface>| {
-                *view = Self::build_mgmt_ifname_selectview(ifaces.iter().collect(), options_ref);
+                let selected_mac = view.selection().map(|iface| iface.mac);
+                *view = Self::build_mgmt_ifname_selectview(options_ref, selected_mac);
             },
         );
     }
 
     fn build_mgmt_ifname_selectview(
-        ifaces: Vec<&Interface>,
         options_ref: NetworkViewOptionsRef,
+        selected_mac: Option<MacAddress>,
     ) -> SelectView<Interface> {
         let options = options_ref.lock().expect("unpoisoned lock");
 
         // Map all interfaces to a list of (human-readable interface name, [Interface]) pairs
-        let ifnames = ifaces
+        let ifnames = options
+            .interfaces
             .iter()
             .map(|iface| {
                 if options.pinning_enabled
@@ -299,20 +275,20 @@ impl NetworkOptionsView {
             })
             .collect::<Vec<(String, Interface)>>();
 
-        let mut view = SelectView::new()
-            .popup()
-            .with_all(ifnames.clone())
-            .on_submit({
-                let options_ref = options_ref.clone();
-                move |_, iface| {
-                    options_ref.lock().expect("unpoisoned lock").selected_mac = iface.mac;
-                }
-            });
+        let mut view = SelectView::new().popup().with_all(ifnames.clone());
+
+        let selected_mac = selected_mac.unwrap_or_else(|| {
+            options
+                .interfaces
+                .first()
+                .expect("at least one network interface")
+                .mac
+        });
 
         // Finally, (try to) select the current one
         let selected = view
             .iter()
-            .position(|(_label, iface)| iface.mac == options.selected_mac)
+            .position(|(_label, iface)| iface.mac == selected_mac)
             .unwrap_or(0); // we sort UP interfaces first, so select the first UP interface
         //
         view.set_selection(selected);
@@ -326,19 +302,44 @@ impl ViewWrapper for NetworkOptionsView {
 }
 
 struct InterfacePinningOptionsView {
-    view: ScrollView<NamedView<FormView<MacAddress>>>,
+    view: LinearLayout,
 }
 
 impl InterfacePinningOptionsView {
+    const ENABLED_CHECKBOX_NAME: &str = "network-interface-name-pinning-enabled";
     const FORM_NAME: &str = "network-interface-name-pinning-form";
 
-    fn new(interfaces: &[&Interface], options_ref: NetworkViewOptionsRef) -> Self {
+    fn new(options_ref: NetworkViewOptionsRef) -> Self {
         let options = options_ref.lock().expect("unpoisoned lock");
 
         // Filter out all non-physical links, as it does not make sense to pin their names
         // in this way.
         // The low-level installer will skip them anyway.
-        let interfaces = interfaces.iter().filter(|iface| iface.pinned_id.is_some());
+        let interfaces = options
+            .interfaces
+            .iter()
+            .filter(|iface| iface.pinned_id.is_some());
+
+        let mut view = LinearLayout::vertical()
+            .child(
+                LinearLayout::horizontal()
+                    .child(
+                        Checkbox::new()
+                            .with_checked(options.pinning_enabled)
+                            .on_change({
+                                let options_ref = options_ref.clone();
+                                move |siv, enabled| {
+                                    options_ref.lock().expect("unpoisoned lock").pinning_enabled =
+                                        enabled;
+
+                                    Self::toggle_all(siv, enabled);
+                                }
+                            })
+                            .with_name(Self::ENABLED_CHECKBOX_NAME),
+                    )
+                    .child(TextView::new(" Pin network interface names").no_wrap()),
+            )
+            .child(DummyView::new());
 
         let mut form = FormView::<MacAddress>::new();
 
@@ -359,6 +360,7 @@ impl InterfacePinningOptionsView {
                                 .name,
                         )
                         .max_content_width(MAX_IFNAME_LEN)
+                        .with_enabled(options.pinning_enabled)
                         .fixed_width(MAX_IFNAME_LEN),
                 );
 
@@ -377,13 +379,31 @@ impl InterfacePinningOptionsView {
             }
         }
 
-        Self {
-            view: ScrollView::new(form.with_name(Self::FORM_NAME)),
-        }
+        view.add_child(form.with_name(Self::FORM_NAME));
+
+        Self { view }
     }
 
-    fn get_values(&mut self) -> Result<NetworkInterfacePinningOptions, String> {
-        let form = self.view.get_inner_mut().get_mut();
+    fn toggle_all(siv: &mut Cursive, enabled: bool) {
+        siv.call_on_name(Self::FORM_NAME, |v: &mut FormView<MacAddress>| {
+            v.call_on_childs(&|v: &mut LinearLayout| {
+                if let Some(v) = v
+                    .get_child_mut(1)
+                    .and_then(|v| v.downcast_mut::<ResizedView<EditView>>())
+                {
+                    v.get_inner_mut().set_enabled(enabled);
+                }
+            });
+        });
+    }
+
+    fn get_values(&mut self) -> Result<NetworkInterfacePinningOptions> {
+        let form = self
+            .view
+            .get_child_mut(2)
+            .and_then(|v| v.downcast_mut::<NamedView<FormView<MacAddress>>>())
+            .ok_or(anyhow!("failed to retrieve interface pinning form"))?
+            .get_mut();
 
         let mut mapping = HashMap::new();
 
@@ -397,18 +417,21 @@ impl InterfacePinningOptionsView {
                 .get_child(1)
                 .and_then(|v| v.downcast_ref::<ResizedView<EditView>>())
                 .map(|v| v.get_inner().get_content())
-                .ok_or_else(|| format!("failed to retrieve pinning ID for interface {}", mac))?;
+                .ok_or(anyhow!(
+                    "failed to retrieve pinning ID for interface {}",
+                    mac
+                ))?;
 
             mapping.insert(*mac, (*name).clone());
         }
 
         let opts = NetworkInterfacePinningOptions { mapping };
-        opts.verify().map_err(|err| err.to_string())?;
+        opts.verify()?;
 
         Ok(opts)
     }
 }
 
 impl ViewWrapper for InterfacePinningOptionsView {
-    cursive::wrap_impl!(self.view: ScrollView<NamedView<FormView<MacAddress>>>);
+    cursive::wrap_impl!(self.view: LinearLayout);
 }
