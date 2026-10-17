@@ -7,7 +7,7 @@ use std::{
 };
 
 use proxmox_installer_types::{
-    UdevInfo,
+    ProxmoxProduct, UdevInfo,
     answer::{
         AutoInstallerConfig, DiskSelection, Filesystem, FilesystemOptions, FilesystemType,
         FilterMatch, FirstBootHookSourceMode, FqdnConfig, FqdnFromDhcpConfig, FqdnSourceMode,
@@ -18,7 +18,10 @@ use proxmox_installer_types::{
 use proxmox_installer_common::{
     ROOT_PASSWORD_MIN_LENGTH,
     disk_checks::check_swapsize,
-    options::{FilesystemDiskInfo, NetworkInterfacePinningOptions, NetworkOptions, email_validate},
+    options::{
+        FilesystemDiskInfo, NetworkInterfacePinningOptions, NetworkOptions, email_validate,
+        is_bond_mode_unsuitable_for_bridge,
+    },
     setup::{
         InstallBtrfsOption, InstallConfig, InstallFirstBootSetup, InstallRootPassword,
         InstallZfsOption, LocaleInfo, RuntimeInfo, SetupInfo,
@@ -142,6 +145,15 @@ fn get_network_settings(
             .join(", ");
 
         info!("Network interface bonding enabled on: {members}");
+
+        if setup_info.config.product == ProxmoxProduct::Pve
+            && is_bond_mode_unsuitable_for_bridge(opts.mode)
+        {
+            warn!(
+                "Bond mode '{}' is not suitable if guests use the bridge on top of the bond",
+                opts.mode
+            );
+        }
     }
 
     if let Some(opts) = &network_options.vlan_opts {
