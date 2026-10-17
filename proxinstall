@@ -509,6 +509,13 @@ my sub create_network_bond_page {
         $primary_if_input->set_text($get_ifname->($primary)) if defined($primary);
     }
 
+    my $mode_note = Gtk3::Label->new();
+    $mode_note->set_markup(
+        '<b>Note</b>: This mode is not suitable if guests use the bridge on top of the bond.');
+    $mode_note->set_line_wrap(1);
+    $mode_note->set_xalign(0.0);
+    $mode_note->set_no_show_all(1);
+
     my $opts_grid = $create_label_widget_grid->([
         ['Bond Mode', $mode_combo],
         ['Hash Policy', $hash_policy_combo],
@@ -530,10 +537,15 @@ my sub create_network_bond_page {
             $mode eq '802.3ad' || $mode eq 'balance-xor',
         );
         $set_option_sensitive->($primary_if_input, $mode eq 'active-backup');
+
+        # these modes rewrite the source MAC address of balanced frames, breaking guest traffic
+        $mode_note->set_visible($iso_env->{cfg}->{bridged_network}
+            && ($mode eq 'balance-alb' || $mode eq 'balance-tlb'));
     };
     $mode_combo->signal_connect(changed => $on_mode_changed);
 
     $vbox->pack_start($opts_grid, 0, 0, 5);
+    $vbox->pack_start($mode_note, 0, 0, 0);
 
     my $if_label = Gtk3::Label->new('Bond Interfaces:');
     $if_label->set_xalign(0.0);
@@ -566,6 +578,7 @@ my sub create_network_bond_page {
         });
 
         $on_mode_changed->() if $active;
+        $mode_note->set_visible(0) if !$active;
 
         $if_label->set_sensitive($active);
         for my $cb (values %$checkboxes) {
@@ -573,6 +586,14 @@ my sub create_network_bond_page {
         }
     };
     $set_sensitive->($gtk_state->{network_bonding_enabled});
+
+    # a shown dialog does not grow, so let it reserve room for the note when it gets its size
+    my $note_visible = $mode_note->get_visible();
+    $mode_note->show();
+    Glib::Idle->add(sub {
+        $mode_note->set_visible($note_visible);
+        return 0;
+    });
 
     $enable_checkbox->signal_connect(
         toggled => sub {
