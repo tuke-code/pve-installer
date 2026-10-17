@@ -500,7 +500,12 @@ fn network_dialog(siv: &mut Cursive) -> InstallerView {
 
     InstallerView::new(
         state,
-        NetworkOptionsView::new(options, &state.runtime_info.network).with_name("network-options"),
+        NetworkOptionsView::new(
+            options,
+            &state.runtime_info.network,
+            state.setup_info.config.product == ProxmoxProduct::Pve,
+        )
+        .with_name("network-options"),
         Box::new(|siv| {
             let options = siv.call_on_name("network-options", NetworkOptionsView::get_values);
 

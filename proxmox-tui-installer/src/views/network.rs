@@ -1,10 +1,11 @@
 use anyhow::{Result, anyhow, bail};
 use cursive::{
     Cursive, View,
+    theme::StyleType,
     view::{Finder, Nameable, Resizable, ViewWrapper},
     views::{
-        BoxedView, Button, Checkbox, Dialog, DummyView, EditView, LinearLayout, NamedView,
-        PaddedView, ResizedView, ScrollView, SelectView, TextView,
+        BoxedView, Button, Checkbox, Dialog, DummyView, EditView, HideableView, LinearLayout,
+        NamedView, PaddedView, ResizedView, ScrollView, SelectView, TextView,
     },
 };
 use std::{
@@ -15,7 +16,7 @@ use std::{
 
 use proxmox_installer_common::{
     net::MAX_IFNAME_LEN,
-    options::{NetworkInterfacePinningOptions, NetworkOptions},
+    options::{NetworkInterfacePinningOptions, NetworkOptions, is_bond_mode_unsuitable_for_bridge},
     setup::{Interface, NetworkInfo},
 };
 use proxmox_installer_types::answer::{NetworkBondOptions, NetworkVlanOptions};
@@ -29,6 +30,8 @@ use proxmox_network_types::{
 use super::{CheckboxGroup, CidrAddressEditView, FormView, IntegerEditView, TabbedView};
 
 struct NetworkViewOptions {
+    /// Whether the management interface becomes a port of a bridge used by guests.
+    bridged: bool,
     pinning_enabled: bool,
     bond_enabled: bool,
     vlan_enabled: bool,
@@ -68,7 +71,7 @@ impl NetworkOptionsView {
     const BOND_OPTIONS_TAB: usize = 1;
     const VLAN_OPTIONS_TAB: usize = 2;
 
-    pub fn new(options: &NetworkOptions, network_info: &NetworkInfo) -> Self {
+    pub fn new(options: &NetworkOptions, network_info: &NetworkInfo, bridged: bool) -> Self {
         let mut interfaces = network_info
             .interfaces
             .values()
@@ -90,6 +93,7 @@ impl NetworkOptionsView {
             });
 
         let options_ref = Arc::new(Mutex::new(NetworkViewOptions {
+            bridged,
             pinning_enabled: options.pinning_opts.is_some(),
             bond_enabled: options.bond_opts.is_some(),
             vlan_enabled: options.vlan_opts.is_some(),
@@ -587,9 +591,12 @@ struct BondOptionsView {
 impl BondOptionsView {
     const FORM_NAME: &str = "network-bond-form-view";
     const MEMBERS_VIEW_NAME: &str = "network-bond-members-checkboxes-view";
+    const MODE_NOTE_NAME: &str = "network-bond-mode-note-view";
+    const MEMBERS_LABEL_NAME: &str = "network-bond-members-label";
 
     fn new(options_ref: NetworkViewOptionsRef) -> Self {
         let options = &options_ref.lock().expect("unpoisoned lock");
+        let bridged = options.bridged;
 
         let mut view = LinearLayout::vertical()
             .child(
@@ -603,7 +610,7 @@ impl BondOptionsView {
                                     options_ref.lock().expect("unpoisoned lock").bond_enabled =
                                         enabled;
 
-                                    Self::toggle_all(siv, enabled);
+                                    Self::toggle_all(siv, enabled, bridged);
                                 }
                             }),
                     )
@@ -627,7 +634,9 @@ impl BondOptionsView {
                             .position(|m| *m == options.bond_options.mode)
                             .unwrap_or_default(),
                     )
-                    .on_submit(Self::toggle_mode_dependent_options),
+                    .on_submit(move |siv, mode| {
+                        Self::toggle_mode_dependent_options(siv, mode, bridged)
+                    }),
             )
             .child(
                 "Hash policy",
@@ -659,7 +668,27 @@ impl BondOptionsView {
         Self::set_options_enabled(&mut form, options.bond_enabled);
 
         view.add_child(form.with_name(Self::FORM_NAME));
-        view.add_child(DummyView::new());
+        view.add_child(
+            LinearLayout::vertical()
+                .child(
+                    HideableView::new(TextView::new(
+                        "Note: This mode is not suitable if guests use the bridge on top of the \
+                         bond.",
+                    ))
+                    .visible(
+                        bridged
+                            && options.bond_enabled
+                            && is_bond_mode_unsuitable_for_bridge(options.bond_options.mode),
+                    )
+                    .with_name(Self::MODE_NOTE_NAME),
+                )
+                .child(DummyView::new())
+                .child(
+                    TextView::new("Bond interfaces:")
+                        .style(Self::label_style(options.bond_enabled))
+                        .with_name(Self::MEMBERS_LABEL_NAME),
+                ),
+        );
 
         let mut checkboxes = CheckboxGroup::<MacAddress>::new();
         let is_listed = |iface: &&Interface| {
@@ -699,7 +728,7 @@ impl BondOptionsView {
     }
 
     /// Enables or disables the bond options, except those the selected mode does not use.
-    fn set_options_enabled(form: &mut FormView, enabled: bool) {
+    fn set_options_enabled(form: &mut FormView, enabled: bool) -> Option<LinuxBondMode> {
         let mode = form.get_value::<SelectView<LinuxBondMode>, _>(0);
         let hash_policy = enabled && mode.is_some_and(Self::hash_policy_view_enabled);
         let primary = enabled && mode.is_some_and(Self::primary_interface_view_enabled);
@@ -717,11 +746,27 @@ impl BondOptionsView {
         form.set_label_enabled(0, enabled);
         form.set_label_enabled(1, hash_policy);
         form.set_label_enabled(2, primary);
+
+        mode
     }
 
-    fn toggle_all(siv: &mut Cursive, enabled: bool) {
-        siv.call_on_name(Self::FORM_NAME, |form: &mut FormView| {
+    fn toggle_all(siv: &mut Cursive, enabled: bool, bridged: bool) {
+        let mode = siv.call_on_name(Self::FORM_NAME, |form: &mut FormView| {
             Self::set_options_enabled(form, enabled)
+        });
+
+        siv.call_on_name(Self::MODE_NOTE_NAME, |note: &mut HideableView<TextView>| {
+            note.set_visible(
+                enabled
+                    && bridged
+                    && mode
+                        .flatten()
+                        .is_some_and(is_bond_mode_unsuitable_for_bridge),
+            );
+        });
+
+        siv.call_on_name(Self::MEMBERS_LABEL_NAME, |label: &mut TextView| {
+            label.set_style(Self::label_style(enabled));
         });
 
         siv.call_on_name(
@@ -732,9 +777,21 @@ impl BondOptionsView {
         );
     }
 
-    fn toggle_mode_dependent_options(siv: &mut Cursive, _: &LinuxBondMode) {
+    fn label_style(enabled: bool) -> StyleType {
+        if enabled {
+            StyleType::primary()
+        } else {
+            StyleType::secondary()
+        }
+    }
+
+    fn toggle_mode_dependent_options(siv: &mut Cursive, selected: &LinuxBondMode, bridged: bool) {
         siv.call_on_name(Self::FORM_NAME, |form: &mut FormView| {
             Self::set_options_enabled(form, true)
+        });
+
+        siv.call_on_name(Self::MODE_NOTE_NAME, |note: &mut HideableView<TextView>| {
+            note.set_visible(bridged && is_bond_mode_unsuitable_for_bridge(*selected));
         });
     }
 

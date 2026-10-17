@@ -20,7 +20,7 @@ use proxmox_installer_types::{
         ZfsCompressOption, ZfsRaidLevel,
     },
 };
-use proxmox_network_types::{MacAddress, fqdn::Fqdn, ip_address::Cidr};
+use proxmox_network_types::{MacAddress, bond::LinuxBondMode, fqdn::Fqdn, ip_address::Cidr};
 
 pub trait RaidLevel {
     /// Returns the minimum number of disks needed for this RAID level.
@@ -517,6 +517,12 @@ impl NetworkOptions {
             Fqdn::from(&format!("{}.{}", default_hostname, Self::DEFAULT_DOMAIN)).unwrap()
         })
     }
+}
+
+/// Whether the bond mode breaks traffic of guests on a bridge on top of the bond, as it overwrites
+/// the source MAC address of frames sent over a member other than the active one.
+pub fn is_bond_mode_unsuitable_for_bridge(mode: LinuxBondMode) -> bool {
+    matches!(mode, LinuxBondMode::BalanceAlb | LinuxBondMode::BalanceTlb)
 }
 
 /// Validates an email address using the regex for `<input type="email" />` elements
