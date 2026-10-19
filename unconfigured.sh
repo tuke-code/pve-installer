@@ -342,6 +342,10 @@ also request proxmox-auto-installer-manifest-url, proxmox-auto-installer-cert-fi
 EOF
 fi
 
+if [ -z "$live_vlan_id" ] && [ -f /cdrom/auto-installer-mode.toml ]; then
+    live_vlan_id=$(/usr/bin/proxmox-fetch-answer vlan-id 2>/dev/null || true)
+fi
+
 live_vlan_links=
 if [ -n "$live_vlan_id" ]; then
     case $live_vlan_id in

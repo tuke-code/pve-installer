@@ -27,7 +27,7 @@ use proxmox_auto_installer::{
     },
 };
 use proxmox_installer_common::{FIRST_BOOT_EXEC_MAX_SIZE, FIRST_BOOT_EXEC_NAME, cli};
-use proxmox_installer_types::answer::{AutoInstallerConfig, FilterMatch};
+use proxmox_installer_types::answer::{AutoInstallerConfig, FilterMatch, NetworkVlanOptions};
 
 static PROXMOX_ISO_FLAG: &str = "/auto-installer-capable";
 
@@ -279,6 +279,9 @@ struct CommandPrepareISOArgs {
     /// If set, the automated installer will include an 'Authorization' header in the HTTP POST
     /// for retrieving the answer, in the format 'Authorization: Bearer <TOKEN>'.
     answer_auth_token: Option<String>,
+
+    /// VLAN tag of the network the installation environment should use.
+    vlan_id: Option<u16>,
 }
 
 impl cli::Subcommand for CommandPrepareISOArgs {
@@ -299,6 +302,7 @@ impl cli::Subcommand for CommandPrepareISOArgs {
             pxe: args.contains("--pxe") || pxe_loader.is_some(),
             pxe_loader,
             answer_auth_token: args.opt_value_from_str("--answer-auth-token")?,
+            vlan_id: args.opt_value_from_str("--vlan-id")?,
             // Needs to be last
             input: args.free_from_str()?,
         })
@@ -399,6 +403,14 @@ OPTIONS:
 
           If set, the automated installer will include an 'Authorization' header in the HTTP POST
           for retrieving the answer, in the format 'Authorization: Bearer <TOKEN>'.
+
+      --vlan-id <VLAN_ID>
+          VLAN tag of the network the installation environment should use for DHCP, fetching the
+          answer file and the post-installation webhook. With the 'from-dhcp' network source, the
+          installed system uses it for the management network too.
+
+          Same as booting with the 'proxmox-vlan=<VLAN_ID>' kernel parameter, which takes
+          precedence. Requires an ISO that supports it.
 
   -h, --help         Print this help
   -V, --version      Print version
@@ -823,6 +835,9 @@ fn inspect_iso_inner(args: &CommandInspectISOArgs, tmp_dir: &Path) -> Result<()>
         };
         println!("HTTP auth token: {shown}");
     }
+    if let Some(vlan_id) = settings.vlan_id {
+        println!("VLAN tag:      {vlan_id}");
+    }
 
     if settings.mode == FetchAnswerFrom::Iso {
         let answer_toml = try_extract_iso_text(&args.input, "/answer.toml", tmp_dir)
@@ -930,6 +945,10 @@ fn prepare_iso(args: &CommandPrepareISOArgs) -> Result<()> {
         bail!("You must set '--fetch-from' to 'iso' to place the answer file directly in the ISO.");
     }
 
+    if let Some(vid) = args.vlan_id {
+        NetworkVlanOptions { vid }.verify()?;
+    }
+
     if let Some(first_boot) = &args.on_first_boot {
         let metadata = fs::metadata(first_boot)?;
 
@@ -989,6 +1008,7 @@ fn prepare_iso(args: &CommandPrepareISOArgs) -> Result<()> {
             cert_fingerprint: args.cert_fingerprint.clone(),
             token: args.answer_auth_token.clone(),
         },
+        vlan_id: args.vlan_id,
     };
     let mut instmode_file_tmp = tmp_base.clone();
     instmode_file_tmp.push("auto-installer-mode.toml");

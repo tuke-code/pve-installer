@@ -229,6 +229,9 @@ pub struct AutoInstSettings {
     pub partition_label: String,
     #[serde(default)]
     pub http: HttpOptions,
+    /// VLAN tag of the network the installation environment uses, if tagged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlan_id: Option<u16>,
 }
 
 pub fn default_partition_label() -> String {
@@ -733,7 +736,26 @@ pub fn parse_answer(
 
 #[cfg(test)]
 mod tests {
-    use super::is_live_vlan_link;
+    use super::{AutoInstSettings, FetchAnswerFrom, HttpOptions, is_live_vlan_link};
+
+    #[test]
+    fn auto_inst_settings_leave_out_an_unset_vlan_tag() {
+        // older ISOs reject unknown keys in these settings
+        let mut settings = AutoInstSettings {
+            mode: FetchAnswerFrom::Iso,
+            partition_label: "proxmox-ais".to_owned(),
+            http: HttpOptions::default(),
+            vlan_id: None,
+        };
+        assert!(!toml::to_string_pretty(&settings).unwrap().contains("vlan"));
+
+        settings.vlan_id = Some(100);
+        assert!(
+            toml::to_string_pretty(&settings)
+                .unwrap()
+                .contains("vlan_id = 100")
+        );
+    }
 
     #[test]
     fn live_vlan_links_are_recognized() {

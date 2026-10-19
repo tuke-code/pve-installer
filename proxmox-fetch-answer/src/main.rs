@@ -38,6 +38,8 @@ Commands:
   partition   Fetch the answer file from a mountable partition
               Additional parameters: [<partition-label>]
 
+  vlan-id     Print the VLAN tag of the installation environment network from the ISO, if set
+
 Options:
   -h, --help  Print this help menu
 "
@@ -111,7 +113,16 @@ fn settings_from_cli_args(args: &[String]) -> Result<AutoInstSettings> {
             cert_fingerprint: args.get(3).cloned().filter(|s| !s.is_empty()),
             token: args.get(4).cloned(),
         },
+        vlan_id: None,
     })
+}
+
+fn settings_from_iso() -> Result<AutoInstSettings> {
+    let raw_install_settings = fs::read_to_string(AUTOINST_MODE_FILE).map_err(|err| {
+        format_err!("Could not find needed file '{AUTOINST_MODE_FILE}' in live environment: {err}")
+    })?;
+    toml::from_str(raw_install_settings.as_str())
+        .map_err(|err| format_err!("Failed to parse '{AUTOINST_MODE_FILE}': {err}"))
 }
 
 fn do_main() -> Result<()> {
@@ -121,16 +132,18 @@ fn do_main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // the network of the installation environment gets set up before fetching the answer
+    if args.get(1).is_some_and(|arg| arg == "vlan-id") {
+        if let Some(vlan_id) = settings_from_iso()?.vlan_id {
+            println!("{vlan_id}");
+        }
+        return Ok(());
+    }
+
     let install_settings: AutoInstSettings = if args.len() > 1 {
         settings_from_cli_args(&args)?
     } else {
-        let raw_install_settings = fs::read_to_string(AUTOINST_MODE_FILE).map_err(|err| {
-            format_err!(
-                "Could not find needed file '{AUTOINST_MODE_FILE}' in live environment: {err}"
-            )
-        })?;
-        toml::from_str(raw_install_settings.as_str())
-            .map_err(|err| format_err!("Failed to parse '{AUTOINST_MODE_FILE}': {err}"))?
+        settings_from_iso()?
     };
 
     let answer = fetch_answer(&install_settings).map_err(|err| format_err!("Aborting: {err}"))?;
