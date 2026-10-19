@@ -365,6 +365,10 @@ pub struct NetworkInfo {
 
     /// The hostname of this machine, if set by the DHCP server.
     pub hostname: Option<String>,
+
+    /// VLAN tag of the network, if the installation environment was set up for a tagged one.
+    #[serde(default)]
+    pub vlan_id: Option<u16>,
 }
 
 #[derive(Clone, Deserialize)]

@@ -92,6 +92,16 @@ fn get_network_settings(
         network_options.gateway = settings.gateway;
         network_options.vlan_opts = settings.vlan.clone();
 
+        let vlan_id = settings.vlan.as_ref().map(|opts| opts.vid);
+        if let Some(live_vlan_id) = runtime_info.network.vlan_id
+            && vlan_id != Some(live_vlan_id)
+        {
+            warn!(
+                "The installation environment uses VLAN {live_vlan_id}, but the answer file sets {}",
+                vlan_id.map_or("no VLAN tag".to_owned(), |id| format!("VLAN {id}"))
+            );
+        }
+
         if network_options.bond_opts.is_none() {
             let ifname = get_single_udev_index(&settings.filter, &udev_info.nics)?;
             // the post-installation hook identifies the management interface by its final name

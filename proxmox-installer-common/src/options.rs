@@ -491,7 +491,7 @@ impl NetworkOptions {
             dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
             pinning_opts: pinning_opts.cloned(),
             bond_opts: bond_opts.cloned(),
-            vlan_opts: None,
+            vlan_opts: network.vlan_id.map(|vid| NetworkVlanOptions { vid }),
         };
 
         let iface = if let Some(gw) = &network.routes.gateway4
@@ -708,6 +708,7 @@ mod tests {
             },
             interfaces,
             hostname: Some("foo".to_owned()),
+            vlan_id: None,
         };
 
         (SetupInfo::mocked(), info)
@@ -814,6 +815,7 @@ mod tests {
             },
             interfaces,
             hostname: Some("foo".to_owned()),
+            vlan_id: None,
         };
 
         (SetupInfo::mocked(), info)
@@ -915,6 +917,7 @@ mod tests {
             },
             interfaces,
             hostname: None,
+            vlan_id: None,
         };
 
         let setup = SetupInfo::mocked();

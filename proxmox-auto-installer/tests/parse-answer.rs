@@ -131,6 +131,7 @@ mod tests {
             network_bond,
             network_bond_and_vlan,
             network_bond_from_answer,
+            network_from_dhcp_live_vlan,
             network_interface_pinning,
             network_interface_pinning_disabled,
             network_interface_pinning_from_answer,
