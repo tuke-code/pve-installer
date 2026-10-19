@@ -159,6 +159,9 @@ pub fn post(
         // don't treat 4xx and 5xx statuses as error, so we can extract the
         // error message from the body
         .http_status_as_error(false)
+        // A redirected POST is resent as GET without the payload, whose 2xx answer must not count
+        // as delivery.
+        .max_redirects(0)
         .build();
 
     for (name, value) in headers.iter() {
