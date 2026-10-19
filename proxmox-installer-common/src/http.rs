@@ -287,13 +287,12 @@ impl<In: Transport> Connector<In> for UreqRustlsConnector {
             return Ok(Some(Either::A(transport)));
         }
 
-        let name: ServerName<'_> = details
+        let host = details
             .uri
             .authority()
             .ok_or(ureq::Error::Tls("no naming authority for URI"))?
-            .host()
-            .try_into()
-            .map_err(|_| ureq::Error::Tls("invalid dns name"))?;
+            .host();
+        let name = tls_server_name(host).map_err(|_| ureq::Error::Tls("invalid dns name"))?;
 
         let conn = ClientConnection::new(self.config.clone(), name.to_owned())?;
         let stream = StreamOwned {
@@ -358,5 +357,38 @@ impl fmt::Debug for UreqRustlsTransport {
             .field("chained", &self.stream.sock.inner())
             .field("buffers", &self.buffers)
             .finish()
+    }
+}
+
+/// The TLS server name for the host part of a URI authority, where IPv6 literals keep their
+/// brackets.
+fn tls_server_name(host: &str) -> Result<ServerName<'_>> {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    Ok(ServerName::try_from(host)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tls_server_name;
+    use rustls::pki_types::ServerName;
+
+    #[test]
+    fn tls_server_names() {
+        assert!(matches!(
+            tls_server_name("[2001:db8::1]").unwrap(),
+            ServerName::IpAddress(_)
+        ));
+        assert!(matches!(
+            tls_server_name("192.0.2.1").unwrap(),
+            ServerName::IpAddress(_)
+        ));
+        assert!(matches!(
+            tls_server_name("escrow.example.com").unwrap(),
+            ServerName::DnsName(_)
+        ));
+        assert!(tls_server_name("[2001:db8::1").is_err());
     }
 }
