@@ -2330,6 +2330,12 @@ if (!$initial_error && (scalar keys $run_env->{network}->{interfaces}->%* == 0))
         defined($_->{pinned_id}) ? ($_->{mac} => DEFAULT_PIN_PREFIX . $_->{pinned_id}) : ()
     } values $run_env->{network}->{interfaces}->%*;
     Proxmox::Install::Config::set_network_interface_pin_map(\%mapping);
+
+    if (defined(my $vlan_id = $run_env->{network}->{vlan_id})) {
+        Proxmox::Install::Config::set_mngmt_vlan_opt('vid', $vlan_id);
+        Proxmox::Install::Config::set_mngmt_vlan_opt('enabled', 1);
+        $gtk_state->{network_vlan_enabled} = 1;
+    }
 }
 
 create_intro_view() if !$initial_error;

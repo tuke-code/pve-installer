@@ -240,13 +240,23 @@ pub fn get_nic_list() -> Result<Vec<String>> {
     let mut links: Vec<String> = Vec::new();
 
     for link in parsed_links {
-        if link.ifname == *"lo" {
+        if link.ifname == *"lo" || is_live_vlan_link(&link.ifname) {
             continue;
         }
         links.push(link.ifname);
     }
 
     Ok(links)
+}
+
+/// Returns whether the link is one of the VLAN links that `unconfigured.sh` sets up for a tagged
+/// installation environment, named `live<ifindex>.<tag>`.
+fn is_live_vlan_link(name: &str) -> bool {
+    let is_number = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+
+    name.strip_prefix("live")
+        .and_then(|rest| rest.split_once('.'))
+        .is_some_and(|(index, tag)| is_number(index) && is_number(tag))
 }
 
 pub fn get_matched_udev_indexes(
@@ -709,4 +719,27 @@ pub fn parse_answer(
     }
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_live_vlan_link;
+
+    #[test]
+    fn live_vlan_links_are_recognized() {
+        assert!(is_live_vlan_link("live2.100"));
+        assert!(is_live_vlan_link("live12.4094"));
+
+        for name in [
+            "eno1",
+            "live",
+            "live2",
+            "live2.",
+            "live.100",
+            "livex.100",
+            "vlan100",
+        ] {
+            assert!(!is_live_vlan_link(name), "{name}");
+        }
+    }
 }

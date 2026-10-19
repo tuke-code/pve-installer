@@ -148,6 +148,7 @@ my sub detect_country_tracing_to : prototype($$) {
 #         interfaces => <see Proxmox::Sys::Net::query_netdevs()>,
 #         routes => <see Proxmox::Sys::Net::query_routes()>,
 #         dns => <see Proxmox::Sys::Net::query_dns()>,
+#         vlan_id => <tag of the network, if the installation environment uses a tagged one>,
 #     },
 # }
 sub query_installation_environment : prototype() {
@@ -175,6 +176,10 @@ sub query_installation_environment : prototype() {
         routes => $routes,
         dns => Proxmox::Sys::Net::query_dns(),
     };
+    Proxmox::Sys::Net::fold_live_vlan_links(
+        $output->{network},
+        Proxmox::Sys::Net::query_live_vlan_links(),
+    );
 
     # avoid serializing out null or an empty string, that can trip up the UIs
     if (my $fqdn = Proxmox::Sys::Net::get_dhcp_hostname()) {

@@ -873,22 +873,21 @@ sub generate_ifupdown2_config {
         ? Proxmox::Install::Config::get_mngmt_vlan_opt('vid')
         : undef;
 
-    # the live environment is not on the management VLAN, so its routes say nothing about it
-    $is_gateway6_from_ra = 0 if defined($vlan_id);
+    # unless the live environment is on the management VLAN, its routes say nothing about it
+    $is_gateway6_from_ra = 0 if ($vlan_id // 0) != ($run_env->{network}->{vlan_id} // 0);
 
     my $link_config =
         $bond_enabled
         ? "auto $ethdev\niface $ethdev $ntype manual\n$bond_config"
         : "iface $ethdev $ntype manual\n";
 
+    # unlike a bridge, the VLAN interface accepts router advertisements, also on top of one
     my $get_vlan_config = sub {
         my ($raw_device) = @_;
 
-        return
-            "\nauto vlan$vlan_id\niface vlan$vlan_id $ntype static\n"
-            . "\taddress $cidr\n"
-            . "\tgateway $gateway\n"
-            . "\tvlan-raw-device $raw_device\n";
+        my $config = "\nauto vlan$vlan_id\niface vlan$vlan_id $ntype static\n\taddress $cidr\n";
+        $config .= "\tgateway $gateway\n" if !$is_gateway6_from_ra;
+        return $config . "\tvlan-raw-device $raw_device\n";
     };
 
     if ($iso_env->{cfg}->{bridged_network} && defined($vlan_id)) {

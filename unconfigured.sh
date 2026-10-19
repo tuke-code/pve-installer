@@ -12,6 +12,7 @@ parse_cmdline() {
     proxdebug=0
     proxtui=0
     serial=0
+    live_vlan_id=
     # shellcheck disable=SC2013 # per word splitting is wanted here
     for par in $(cat /proc/cmdline); do
         case $par in
@@ -27,12 +28,36 @@ parse_cmdline() {
             console=ttyS*|console=ttyAMA*)
                 serial=1
             ;;
+            proxmox-vlan=*)
+                live_vlan_id=${par#proxmox-vlan=}
+            ;;
         esac
     done;
 }
 
 debugsh() {
     /bin/bash
+}
+
+# prints the names of the VLAN links, the low-level installer folds them into their physical link
+setup_live_vlan_links() {
+    local vlan_id=$1 path dev name
+
+    for path in /sys/class/net/*; do
+        dev=${path##*/}
+        if [ ! -e "$path/device" ] || [ "$(cat "$path/type")" != 1 ]; then
+            continue
+        fi
+
+        # keep the untagged network from configuring the installation environment
+        sysctl -q -w "net.ipv6.conf.$dev.accept_ra=0" || true
+        ip link set "$dev" up
+
+        name="live$(cat "$path/ifindex").$vlan_id"
+        if ip link add link "$dev" name "$name" type vlan id "$vlan_id" && ip link set "$name" up; then
+            echo "$name"
+        fi
+    done
 }
 
 eject_and_reboot() {
@@ -221,7 +246,8 @@ handle_wireless() {
 # Iterates over all UP interfaces and sends a router solicitation on each.
 ipv6_send_router_solicitation() {
     local devs
-    devs="$(ip -6 addr show scope link up | grep -oP '^\d+: \K\S+(?=:)')"
+    # stacked links like VLANs are shown as <name>@<link>
+    devs="$(ip -6 addr show scope link up | grep -oP '^\d+: \K[^@:]+')"
 
     for dev in $devs; do
         rdisc6 -1 --retry 1 "$dev" || true
@@ -316,10 +342,30 @@ also request proxmox-auto-installer-manifest-url, proxmox-auto-installer-cert-fi
 EOF
 fi
 
+live_vlan_links=
+if [ -n "$live_vlan_id" ]; then
+    case $live_vlan_id in
+        0*|*[!0-9]*) is_number=0 ;;
+        *) is_number=1 ;;
+    esac
+    if [ "$is_number" -eq 1 ] && [ "$live_vlan_id" -ge 2 ] && [ "$live_vlan_id" -le 4094 ]; then
+        echo "Setting up VLAN $live_vlan_id for the network of the installation environment..."
+        live_vlan_links=$(setup_live_vlan_links "$live_vlan_id")
+    else
+        echo "Ignoring invalid VLAN tag '$live_vlan_id', must be between 2 and 4094"
+        live_vlan_id=
+    fi
+fi
+
 # try to get ip config with dhcp
-echo -n "Attempting to get DHCP leases... "
-dhclient -v
-echo "done"
+if [ -n "$live_vlan_id" ] && [ -z "$live_vlan_links" ]; then
+    echo "Could not set up VLAN $live_vlan_id on any network interface, skipping DHCP."
+else
+    echo -n "Attempting to get DHCP leases... "
+    # shellcheck disable=SC2086 # word splitting of the link list is wanted
+    dhclient -v $live_vlan_links
+    echo "done"
+fi
 
 # start rdnssd in the background first
 # the default merge hook just appends it to /etc/resolv.conf, which is what we want

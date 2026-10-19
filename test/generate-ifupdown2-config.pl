@@ -687,6 +687,87 @@ EOT
     , 'management VLAN always gets the configured gateway',
 );
 
+# A tagged installation environment on the management VLAN has its routes
+$proxmox_install_runenv->redefine(
+    get => sub {
+        return {
+            network => {
+                interfaces => {
+                    eno1 => {
+                        mac => '12:34:56:ab:cd:ef',
+                        index => 1,
+                        name => 'eno1',
+                        pinned_id => '0',
+                    },
+                    eno2 => {
+                        mac => 'ab:cd:ef:12:34:56',
+                        index => 2,
+                        name => 'eno2',
+                        pinned_id => '1',
+                    },
+                },
+                routes => {
+                    gateways6 => [{ dev => 'eno1', gateway => 'fe80::1', protocol => 'ra' }],
+                },
+                vlan_id => 5,
+            },
+        };
+    },
+);
+set_config(bridge => 0, bond => 0, vlan => 1);
+is_generated(
+    <<EOT
+auto eno1
+iface eno1 inet6 manual
+
+auto vlan5
+iface vlan5 inet6 static
+	address 2001:db8::1/64
+	vlan-raw-device eno1
+
+iface eno2 inet6 manual
+EOT
+    , 'gateway learned from router advertisements on the management VLAN is not configured',
+);
+
+set_config(bridge => 1, bond => 0, vlan => 1);
+is_generated(
+    <<EOT
+iface eno1 inet6 manual
+
+auto vmbr0
+iface vmbr0 inet6 manual
+	bridge-ports eno1
+	bridge-stp off
+	bridge-fd 0
+	bridge-vlan-aware yes
+	bridge-vids 2-4094
+
+auto vlan5
+iface vlan5 inet6 static
+	address 2001:db8::1/64
+	vlan-raw-device vmbr0
+
+iface eno2 inet6 manual
+EOT
+    , 'gateway learned from router advertisements on the management VLAN on a bridge is not configured',
+);
+
+set_config(bridge => 0, bond => 0, vlan => 1);
+Proxmox::Install::Config::merge({ mngmt_vlan => { enabled => 1, vid => 200 } });
+like(
+    Proxmox::Install::generate_ifupdown2_config(),
+    qr/^iface vlan200 inet6 static\n\taddress 2001:db8::1\/64\n\tgateway fe80::1\n/m,
+    'management VLAN other than the installation environment one gets the configured gateway',
+);
+
+set_config(bridge => 0, bond => 0, vlan => 0);
+like(
+    Proxmox::Install::generate_ifupdown2_config(),
+    qr/^iface eno1 inet6 static\n\taddress 2001:db8::1\/64\n\tgateway fe80::1\n/m,
+    'untagged management network with a tagged installation environment gets the configured gateway',
+);
+
 for my $id (0, 1, 4095, 'abc', '1.5') {
     eval { Proxmox::Install::Config::set_mngmt_vlan_opt('vid', $id) };
     like(

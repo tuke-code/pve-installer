@@ -191,10 +191,12 @@ sub get_pin_link_file_content {
 
 sub udevadm_netdev_details {
     my $ifaces = query_netdevs();
+    my $live_vlan_links = query_live_vlan_links();
 
     my $result = {};
     for my $dev (values $ifaces->%*) {
         my $name = $dev->{name};
+        next if $live_vlan_links->{$name};
         $result->{$name} = Proxmox::Sys::Udev::get_udev_properties("/sys/class/net/$name");
     }
     return $result;
@@ -274,6 +276,55 @@ sub query_netdevs : prototype() {
     }
 
     return $ifs;
+}
+
+# Returns the VLAN links unconfigured.sh sets up for a tagged installation environment network.
+#
+# {
+#     <ifname> => { parent => <ifname of the physical link>, vlan_id => <tag> },
+# }
+sub query_live_vlan_links : prototype() {
+    my $links = from_json(qx/ip --details --json link show type vlan/, { utf8 => 1 });
+
+    my $vlan_links = {};
+    for my $link ($links->@*) {
+        my ($name, $parent) = $link->@{qw(ifname link)};
+        my $vlan_id = $link->{linkinfo}->{info_data}->{id};
+        next if !defined($name) || $name !~ m/^live\d+\.\d+$/;
+        next if !defined($parent) || !defined($vlan_id);
+
+        $vlan_links->{$name} = { parent => $parent, vlan_id => $vlan_id };
+    }
+
+    return $vlan_links;
+}
+
+# Moves the addresses and routes of the given VLAN links to their physical link, which the
+# frontends offer as management interface, and records the tag as `vlan_id`.
+sub fold_live_vlan_links : prototype($$) {
+    my ($network, $vlan_links) = @_;
+
+    my $interfaces = $network->{interfaces};
+    for my $name (sort keys $vlan_links->%*) {
+        my $link = $vlan_links->{$name};
+        my $vlan_if = delete $interfaces->{$name};
+        my $parent = $interfaces->{ $link->{parent} } or next;
+
+        if (defined($vlan_if) && defined($vlan_if->{addresses})) {
+            push $parent->{addresses}->@*, $vlan_if->{addresses}->@*;
+        }
+        $network->{vlan_id} = $link->{vlan_id};
+    }
+
+    my $routes = $network->{routes};
+    my @routes =
+        grep { defined } $routes->{gateway4}, $routes->{gateway6},
+        ($routes->{gateways6} // [])->@*;
+
+    for my $route (@routes) {
+        my $link = $vlan_links->{ $route->{dev} // '' } or next;
+        $route->{dev} = $link->{parent};
+    }
 }
 
 # Returns a hash.
