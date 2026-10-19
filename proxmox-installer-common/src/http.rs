@@ -8,7 +8,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use ureq::Agent;
-use ureq::http::StatusCode;
 use ureq::unversioned::resolver::DefaultResolver;
 use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, Either, LazyBuffers, NextTimeout, TcpConnector,
@@ -143,8 +142,8 @@ pub struct Response {
 ///
 /// # Returns
 ///
-/// If the request was successful with 200 OK or 201 CREATED, a [`Response`] holding the body
-/// contents and the `Content-Type` header, if present.
+/// If the request was successful with any 2xx status, a [`Response`] holding the body contents
+/// and the `Content-Type` header, if present.
 pub fn post(
     url: &str,
     fingerprint: Option<&str>,
@@ -176,9 +175,11 @@ pub fn post(
         .map(ContentType::from_str)
         .transpose()?;
 
-    match response.status() {
-        StatusCode::OK | StatusCode::CREATED => Ok(Response { body, content_type }),
-        other => bail!("http error: {other}: {body}"),
+    let status = response.status();
+    if status.is_success() {
+        Ok(Response { body, content_type })
+    } else {
+        bail!("http error: {status}: {body}")
     }
 }
 
