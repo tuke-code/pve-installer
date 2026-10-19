@@ -16,7 +16,10 @@ use std::{
 
 use proxmox_installer_common::{
     net::MAX_IFNAME_LEN,
-    options::{NetworkInterfacePinningOptions, NetworkOptions, is_bond_mode_unsuitable_for_bridge},
+    options::{
+        InterfaceSuggestion, NetworkInterfacePinningOptions, NetworkOptions,
+        is_bond_mode_unsuitable_for_bridge,
+    },
     setup::{Interface, NetworkInfo},
 };
 use proxmox_installer_types::answer::{NetworkBondOptions, NetworkVlanOptions};
@@ -37,10 +40,10 @@ struct NetworkViewOptions {
     vlan_enabled: bool,
     network: NetworkInfo,
     interfaces: Vec<Interface>,
-    /// Last selected interface (by its MAC address) in the [SelectView].
+    /// Last selected interface (by its index) in the [SelectView].
     /// Keeps track of the selected interface across enabling/disabling bonding, which replaces the
     /// view.
-    last_selected_iface: MacAddress,
+    last_selected_iface: usize,
     // kept while disabled, so that toggling the checkbox does not reset them
     pinning_options: NetworkInterfacePinningOptions,
     bond_options: NetworkBondOptions,
@@ -81,15 +84,15 @@ impl NetworkOptionsView {
         // First, sort interfaces by their link state and then name
         interfaces.sort_unstable_by(|a, b| (&a.state, &a.name).cmp(&(&b.state, &b.name)));
 
-        let selected_mac = network_info
+        let selected_index = network_info
             .interfaces
             .get(&options.ifname)
-            .map(|iface| iface.mac)
+            .map(|iface| iface.index)
             .unwrap_or_else(|| {
                 interfaces
                     .first()
                     .expect("at least one network interface")
-                    .mac
+                    .index
             });
 
         let options_ref = Arc::new(Mutex::new(NetworkViewOptions {
@@ -99,7 +102,7 @@ impl NetworkOptionsView {
             vlan_enabled: options.vlan_opts.is_some(),
             network: network_info.clone(),
             interfaces,
-            last_selected_iface: selected_mac,
+            last_selected_iface: selected_index,
             pinning_options: options.pinning_opts.clone().unwrap_or_default(),
             bond_options: options.bond_opts.clone().unwrap_or_default(),
             vlan_options: options
@@ -400,6 +403,27 @@ impl NetworkOptionsView {
         }
     }
 
+    fn fill_in_suggestion(siv: &mut Cursive, suggestion: InterfaceSuggestion) {
+        siv.call_on_name(Self::FORM_VIEW_NAME, |form: &mut FormView<()>| {
+            if let (Some(address), Some(view)) = (
+                suggestion.address,
+                form.get_child_mut::<CidrAddressEditView>(2),
+            ) {
+                view.set_content(address);
+            }
+            if let (Some(gateway), Some(view)) =
+                (suggestion.gateway, form.get_child_mut::<EditView>(3))
+            {
+                view.set_content(gateway.to_string());
+            }
+            if let (Some(dns_server), Some(view)) =
+                (suggestion.dns_server, form.get_child_mut::<EditView>(4))
+            {
+                view.set_content(dns_server.to_string());
+            }
+        });
+    }
+
     fn build_mgmt_ifname_selectview(options_ref: NetworkViewOptionsRef) -> SelectView<Interface> {
         let options = options_ref.lock().expect("unpoisoned lock");
 
@@ -423,16 +447,23 @@ impl NetworkOptionsView {
             .with_all(ifnames.clone())
             .on_submit({
                 let options_ref = options_ref.clone();
-                move |_, iface| {
+                move |siv, iface| {
                     let mut options = options_ref.lock().expect("unpoisoned lock");
-                    options.last_selected_iface = iface.mac;
+                    if iface.index == options.last_selected_iface {
+                        return;
+                    }
+                    options.last_selected_iface = iface.index;
+
+                    let suggestion = InterfaceSuggestion::new(&options.network, iface);
+                    drop(options);
+                    Self::fill_in_suggestion(siv, suggestion);
                 }
             });
 
         // Finally, (try to) select the current one
         let selected = view
             .iter()
-            .position(|(_label, iface)| iface.mac == options.last_selected_iface)
+            .position(|(_label, iface)| iface.index == options.last_selected_iface)
             .unwrap_or(0); // we sort UP interfaces first, so select the first UP interface
         //
         view.set_selection(selected);

@@ -622,6 +622,11 @@ impl CidrAddressEditView {
     }
 
     pub fn content(mut self, cidr: Cidr) -> Self {
+        self.set_content(cidr);
+        self
+    }
+
+    pub fn set_content(&mut self, cidr: Cidr) {
         if let Some(view) = self
             .view
             .get_child_mut(0)
@@ -639,8 +644,6 @@ impl CidrAddressEditView {
         {
             *view = Self::mask_edit_view(cidr.mask());
         }
-
-        self
     }
 
     fn mask_edit_view(content: u8) -> ResizedView<IntegerEditView> {

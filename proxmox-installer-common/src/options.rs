@@ -11,7 +11,7 @@ use std::{
 
 use crate::disk_checks::check_raid_min_disks;
 use crate::net::{MAX_IFNAME_LEN, MIN_IFNAME_LEN};
-use crate::setup::{LocaleInfo, NetworkInfo, RuntimeInfo, SetupInfo};
+use crate::setup::{Interface, LocaleInfo, NetworkInfo, RuntimeInfo, SetupInfo};
 use proxmox_installer_types::{
     EMAIL_DEFAULT_PLACEHOLDER,
     answer::{
@@ -388,6 +388,75 @@ impl From<&NetworkInterfacePinningOptionsAnswer> for NetworkInterfacePinningOpti
     }
 }
 
+/// Network settings to suggest for a management interface, as it is configured in the installation
+/// environment.
+#[derive(Debug, PartialEq)]
+pub struct InterfaceSuggestion {
+    pub address: Option<Cidr>,
+    pub gateway: Option<IpAddr>,
+    pub dns_server: Option<IpAddr>,
+}
+
+impl InterfaceSuggestion {
+    /// Takes the gateway and the DNS server from the default route of the interface, if it has
+    /// one, so that they describe the route the kernel actually uses there, and an address of the
+    /// same IP version. The interface may carry its pinned name.
+    pub fn new(network: &NetworkInfo, iface: &Interface) -> Self {
+        // routes use the kernel name; the MAC address is no identifier here, as bonds, bridges and
+        // their ports share it
+        let kernel_name = iface
+            .pinned_id
+            .as_ref()
+            .and_then(|id| {
+                network
+                    .interfaces
+                    .values()
+                    .find(|other| other.pinned_id.as_ref() == Some(id))
+            })
+            .map_or(iface.name.as_str(), |other| other.name.as_str());
+
+        let routes = &network.routes;
+        let gateway = routes
+            .gateway4
+            .iter()
+            .chain(routes.gateways6.iter())
+            .find(|gw| gw.dev == kernel_name)
+            .map(|gw| gw.gateway);
+
+        let is_ipv4 = gateway
+            .or_else(|| {
+                routes
+                    .gateway4
+                    .as_ref()
+                    .or(routes.gateway6.as_ref())
+                    .map(|gw| gw.gateway)
+            })
+            .map(|gw| gw.is_ipv4());
+
+        let address = iface
+            .addresses
+            .iter()
+            .find(|addr| Some(addr.address().is_ipv4()) == is_ipv4)
+            .or(iface.addresses.first())
+            .cloned();
+
+        let dns_server = gateway.and_then(|gw| {
+            network
+                .dns
+                .dns
+                .iter()
+                .find(|dns| dns.is_ipv4() == gw.is_ipv4())
+                .cloned()
+        });
+
+        Self {
+            address,
+            gateway,
+            dns_server,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NetworkOptions {
     pub ifname: String,
@@ -635,6 +704,7 @@ mod tests {
                     gateway: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
                 }),
                 gateway6: None,
+                gateways6: Vec::new(),
             },
             interfaces,
             hostname: Some("foo".to_owned()),
@@ -737,6 +807,10 @@ mod tests {
                     dev: "eth0".to_owned(),
                     gateway: IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
                 }),
+                gateways6: vec![Gateway {
+                    dev: "eth0".to_owned(),
+                    gateway: IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+                }],
             },
             interfaces,
             hostname: Some("foo".to_owned()),
@@ -837,6 +911,7 @@ mod tests {
             routes: Routes {
                 gateway4: None,
                 gateway6: None,
+                gateways6: Vec::new(),
             },
             interfaces,
             hostname: None,
@@ -1005,5 +1080,72 @@ mod tests {
             res.unwrap_err().to_string(),
             "interface name '12345' for 'ab:cd:ef:12:34:56' is invalid: name must start with a letter and contain only ascii characters, digits and underscores"
         )
+    }
+
+    #[test]
+    fn interface_suggestion_follows_route_of_interface() {
+        let network: NetworkInfo = serde_json::from_str(
+            r#"{
+                "dns": { "dns": ["192.168.0.1", "2001:db8::1"] },
+                "routes": {
+                    "gateway4": { "dev": "eth0", "gateway": "192.168.0.1" },
+                    "gateway6": { "dev": "eth1", "gateway": "fe80::1" },
+                    "gateways6": [{ "dev": "eth1", "gateway": "fe80::1" }]
+                },
+                "interfaces": {
+                    "eth0": {
+                        "name": "eth0", "index": 2, "pinned_id": "0", "mac": "01:23:45:67:89:a0",
+                        "state": "UP", "driver": "igb",
+                        "addresses": [{ "address": "192.168.0.2", "prefix": 24 }]
+                    },
+                    "eth1": {
+                        "name": "eth1", "index": 3, "pinned_id": "1", "mac": "01:23:45:67:89:a1",
+                        "state": "UP", "driver": "igb",
+                        "addresses": [
+                            { "address": "10.0.0.2", "prefix": 8 },
+                            { "address": "2001:db8::2", "prefix": 64 }
+                        ]
+                    },
+                    "eth2": {
+                        "name": "eth2", "index": 4, "pinned_id": "2", "mac": "01:23:45:67:89:a2",
+                        "state": "UP", "driver": "igb",
+                        "addresses": [
+                            { "address": "2001:db8:1::2", "prefix": 64 },
+                            { "address": "172.16.0.2", "prefix": 16 }
+                        ]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            InterfaceSuggestion::new(&network, &network.interfaces["eth0"]),
+            InterfaceSuggestion {
+                address: Some(Cidr::new_v4([192, 168, 0, 2], 24).unwrap()),
+                gateway: Some("192.168.0.1".parse().unwrap()),
+                dns_server: Some("192.168.0.1".parse().unwrap()),
+            }
+        );
+
+        let mut pinned = network.interfaces["eth1"].clone();
+        pinned.name = "mgmt0".to_owned();
+        assert_eq!(
+            InterfaceSuggestion::new(&network, &pinned),
+            InterfaceSuggestion {
+                address: Some(Cidr::new("2001:db8::2".parse::<IpAddr>().unwrap(), 64).unwrap()),
+                gateway: Some("fe80::1".parse().unwrap()),
+                dns_server: Some("2001:db8::1".parse().unwrap()),
+            }
+        );
+
+        assert_eq!(
+            InterfaceSuggestion::new(&network, &network.interfaces["eth2"]),
+            InterfaceSuggestion {
+                address: Some(Cidr::new_v4([172, 16, 0, 2], 16).unwrap()),
+                gateway: None,
+                dns_server: None,
+            }
+        );
     }
 }

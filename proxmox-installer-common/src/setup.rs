@@ -383,6 +383,10 @@ pub struct Routes {
 
     /// Ipv6 gateway.
     pub gateway6: Option<Gateway>,
+
+    /// All IPv6 default routes, the kernel adds one per interface receiving router advertisements.
+    #[serde(default)]
+    pub gateways6: Vec<Gateway>,
 }
 
 #[derive(Clone, Deserialize)]
