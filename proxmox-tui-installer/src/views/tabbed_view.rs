@@ -50,12 +50,15 @@ impl TabbedView {
         self.views.get_mut(index).map(|(_, view)| view.borrow_mut())
     }
 
+    /// Returns the width of the tab names header, as drawn by `print_tab_names()`.
+    fn tab_bar_width(&self) -> usize {
+        let names_len: usize = self.views.iter().map(|(name, _)| name.len() + 2).sum();
+        names_len + self.views.len() + 1
+    }
+
     /// Draws the border around the tab view and the name header for each tab.
     fn draw_border(&self, p: &Printer) {
-        let names_len: usize = self.views.iter().map(|(name, _)| name.len() + 2).sum();
-        let tabbar_width = names_len + self.views.len() + 1;
-
-        let top_border_width = (p.output_size.x - tabbar_width) / 2;
+        let top_border_width = p.output_size.x.saturating_sub(self.tab_bar_width()) / 2;
         p.print_box((0, 0), p.output_size, false);
 
         self.print_tab_names(p.offset((top_border_width, 0)));
@@ -118,8 +121,12 @@ impl View for TabbedView {
     }
 
     fn required_size(&mut self, constraint: Vec2) -> Vec2 {
+        // keep the corners of the top border visible next to the tab names
+        let min_width = self.tab_bar_width() + 2;
+
         if let Some(view) = self.get_mut(self.current) {
-            view.required_size(constraint) + (2, 2)
+            let size = view.required_size(constraint) + (2, 2);
+            Vec2::new(size.x.max(min_width), size.y)
         } else {
             constraint
         }
