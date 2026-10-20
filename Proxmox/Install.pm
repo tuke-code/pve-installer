@@ -1423,6 +1423,10 @@ sub extract_data {
         my $keymap = Proxmox::Install::Config::get_keymap();
         # Note: keyboard-configuration/xbkb-keymap is used by console-setup
         my $xkmap = $iso_env->{locales}->{kmap}->{$keymap}->{x11} // 'us';
+        # keyboard-configuration splits this into layout and variant
+        if (my $xkvariant = $iso_env->{locales}->{kmap}->{$keymap}->{x11var}) {
+            $xkmap .= "($xkvariant)";
+        }
 
         my $grub_debconfig = '';
         if ($run_env->{arch} ne 'arm64') {
