@@ -205,6 +205,7 @@ impl NetworkOptionsView {
                 dns_server,
                 pinning_opts,
                 bond_opts: None,
+                vlan_opts: None,
             })
         }
     }

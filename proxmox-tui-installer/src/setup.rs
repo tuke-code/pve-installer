@@ -36,6 +36,7 @@ impl From<InstallerOptions> for InstallConfig {
 
             mngmt_nic: options.network.ifname,
             mngmt_bond: options.network.bond_opts.as_ref().map(Into::into),
+            mngmt_vlan: options.network.vlan_opts.as_ref().map(Into::into),
             network_interface_pin_map: pinning_opts.map(|o| o.mapping.clone()).unwrap_or_default(),
 
             hostname: options.network.fqdn.host().to_owned(),

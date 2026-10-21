@@ -1,0 +1,3 @@
+{
+  "parse-error": "error parsing answer.toml: unknown field `vlan`, expected `interface-name-pinning` or `bond`"
+}

@@ -16,7 +16,8 @@ use proxmox_installer_types::{
     EMAIL_DEFAULT_PLACEHOLDER,
     answer::{
         BtrfsCompressOption, BtrfsRaidLevel, FilesystemType, NetworkBondOptions,
-        NetworkInterfacePinningOptionsAnswer, ZfsChecksumOption, ZfsCompressOption, ZfsRaidLevel,
+        NetworkInterfacePinningOptionsAnswer, NetworkVlanOptions, ZfsChecksumOption,
+        ZfsCompressOption, ZfsRaidLevel,
     },
 };
 use proxmox_network_types::{MacAddress, fqdn::Fqdn, ip_address::Cidr};
@@ -396,6 +397,7 @@ pub struct NetworkOptions {
     pub dns_server: IpAddr,
     pub pinning_opts: Option<NetworkInterfacePinningOptions>,
     pub bond_opts: Option<NetworkBondOptions>,
+    pub vlan_opts: Option<NetworkVlanOptions>,
 }
 
 impl NetworkOptions {
@@ -420,6 +422,7 @@ impl NetworkOptions {
             dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
             pinning_opts: pinning_opts.cloned(),
             bond_opts: bond_opts.cloned(),
+            vlan_opts: None,
         };
 
         let iface = if let Some(gw) = &network.routes.gateway4
@@ -648,6 +651,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
 
@@ -662,6 +666,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
 
@@ -676,6 +681,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
 
@@ -690,6 +696,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
     }
@@ -746,6 +753,7 @@ mod tests {
                 dns_server: IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x53)),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
     }
@@ -764,6 +772,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
 
@@ -778,6 +787,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
 
@@ -792,6 +802,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
     }
@@ -837,6 +848,7 @@ mod tests {
                 dns_server: Ipv4Addr::new(192, 168, 100, 1).into(),
                 pinning_opts: None,
                 bond_opts: None,
+                vlan_opts: None,
             }
         );
     }

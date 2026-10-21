@@ -87,6 +87,7 @@ fn get_network_settings(
         network_options.address = settings.cidr;
         network_options.dns_server = settings.dns;
         network_options.gateway = settings.gateway;
+        network_options.vlan_opts = settings.vlan.clone();
 
         if network_options.bond_opts.is_none() {
             let ifname = get_single_udev_index(&settings.filter, &udev_info.nics)?;
@@ -141,6 +142,10 @@ fn get_network_settings(
             .join(", ");
 
         info!("Network interface bonding enabled on: {members}");
+    }
+
+    if let Some(opts) = &network_options.vlan_opts {
+        info!("Management interface reachable on VLAN {}", opts.vid);
     }
 
     info!("Network interface used is '{}'", &network_options.ifname);
@@ -561,6 +566,10 @@ pub fn verify_network_settings(
         }
     }
 
+    if let Some(opts) = network.vlan() {
+        opts.verify()?;
+    }
+
     Ok(())
 }
 
@@ -621,6 +630,7 @@ pub fn parse_answer(
 
         mngmt_nic: network_settings.ifname,
         mngmt_bond: network_settings.bond_opts.as_ref().map(Into::into),
+        mngmt_vlan: network_settings.vlan_opts.as_ref().map(Into::into),
         network_interface_pin_map: network_settings
             .pinning_opts
             .map(|o| o.mapping)

@@ -17,8 +17,8 @@ use crate::options::{
 use proxmox_installer_types::{
     BootType, IsoInfo, ProductConfig,
     answer::{
-        BtrfsCompressOption, FilesystemType, NetworkBondOptions, ZfsChecksumOption,
-        ZfsCompressOption,
+        BtrfsCompressOption, FilesystemType, NetworkBondOptions, NetworkVlanOptions,
+        ZfsChecksumOption, ZfsCompressOption,
     },
 };
 use proxmox_network_types::{
@@ -582,6 +582,8 @@ pub struct InstallConfig {
     pub mngmt_nic: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mngmt_bond: Option<InstallBondConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mngmt_vlan: Option<InstallVlanConfig>,
 
     // Maps MAC addresses -> custom name. If set, enables pinning for all
     // interfaces present.
@@ -624,6 +626,27 @@ impl From<&NetworkBondOptions> for InstallBondConfig {
             mode: opts.mode,
             hash_policy: opts.hash_policy,
             primary_interface: opts.primary_interface,
+        }
+    }
+}
+
+/// Management VLAN setup, see `mngmt_vlan` in Proxmox::Install::Config
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InstallVlanConfig {
+    // the low-level installer replaces its default, which has it disabled, as a whole
+    #[serde(
+        serialize_with = "serialize_bool_as_u32",
+        deserialize_with = "deserialize_bool_from_int"
+    )]
+    enabled: bool,
+    pub vid: u16,
+}
+
+impl From<&NetworkVlanOptions> for InstallVlanConfig {
+    fn from(opts: &NetworkVlanOptions) -> Self {
+        Self {
+            enabled: true,
+            vid: opts.vid,
         }
     }
 }
@@ -790,6 +813,19 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&bond).unwrap(),
             r#"{"members":["b4:2e:99:ac:ad:b4","b4:2e:99:ac:ad:b5"],"mode":"active-backup","hash_policy":"layer2","primary_interface":"b4:2e:99:ac:ad:b5"}"#
+        );
+    }
+
+    #[test]
+    fn vlan_config_uses_integer_flag_of_low_level_installer() {
+        // the saved low-level configuration keeps this default without a VLAN
+        let disabled: InstallVlanConfig = serde_json::from_str(r#"{"enabled":0,"vid":0}"#).unwrap();
+        assert!(!disabled.enabled);
+
+        let enabled = InstallVlanConfig::from(&NetworkVlanOptions { vid: 100 });
+        assert_eq!(
+            serde_json::to_string(&enabled).unwrap(),
+            r#"{"enabled":1,"vid":100}"#
         );
     }
 }
