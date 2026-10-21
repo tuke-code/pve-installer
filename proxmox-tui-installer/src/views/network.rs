@@ -18,7 +18,7 @@ use proxmox_installer_common::{
     options::{NetworkInterfacePinningOptions, NetworkOptions},
     setup::{Interface, NetworkInfo},
 };
-use proxmox_installer_types::answer::NetworkBondOptions;
+use proxmox_installer_types::answer::{NetworkBondOptions, NetworkVlanOptions};
 use proxmox_network_types::{
     MacAddress,
     bond::{BondXmitHashPolicy, LinuxBondMode},
@@ -26,11 +26,12 @@ use proxmox_network_types::{
     ip_address::Cidr,
 };
 
-use super::{CheckboxGroup, CidrAddressEditView, FormView};
+use super::{CheckboxGroup, CidrAddressEditView, FormView, IntegerEditView};
 
 struct NetworkViewOptions {
     pinning_enabled: bool,
     bond_enabled: bool,
+    vlan_enabled: bool,
     network: NetworkInfo,
     interfaces: Vec<Interface>,
     /// Last selected interface (by its MAC address) in the [SelectView].
@@ -40,6 +41,7 @@ struct NetworkViewOptions {
     // kept while disabled, so that toggling the checkbox does not reset them
     pinning_options: NetworkInterfacePinningOptions,
     bond_options: NetworkBondOptions,
+    vlan_options: NetworkVlanOptions,
 }
 
 /// Convenience wrapper when needing to take a (interior-mutable) reference to
@@ -59,6 +61,7 @@ impl NetworkOptionsView {
 
     const INTERFACE_PINNING_VIEW_NAME: &str = "network-name-pinning-view";
     const BOND_OPTIONS_VIEW_NAME: &str = "network-bond-options-view";
+    const VLAN_OPTIONS_VIEW_NAME: &str = "network-vlan-options-view";
 
     pub fn new(options: &NetworkOptions, network_info: &NetworkInfo) -> Self {
         let mut interfaces = network_info
@@ -84,11 +87,16 @@ impl NetworkOptionsView {
         let options_ref = Arc::new(Mutex::new(NetworkViewOptions {
             pinning_enabled: options.pinning_opts.is_some(),
             bond_enabled: options.bond_opts.is_some(),
+            vlan_enabled: options.vlan_opts.is_some(),
             network: network_info.clone(),
             interfaces,
             last_selected_iface: selected_mac,
             pinning_options: options.pinning_opts.clone().unwrap_or_default(),
             bond_options: options.bond_opts.clone().unwrap_or_default(),
+            vlan_options: options
+                .vlan_opts
+                .clone()
+                .unwrap_or(NetworkVlanOptions { vid: 0 }),
         }));
 
         let form = FormView::<()>::new()
@@ -189,6 +197,7 @@ impl NetworkOptionsView {
             .then_some(options.pinning_options.clone());
 
         let bond_opts = options.bond_enabled.then_some(options.bond_options.clone());
+        let vlan_opts = options.vlan_enabled.then_some(options.vlan_options.clone());
 
         let ifname = if options.bond_enabled {
             "bond0".to_owned()
@@ -219,7 +228,7 @@ impl NetworkOptionsView {
                 dns_server,
                 pinning_opts,
                 bond_opts,
-                vlan_opts: None,
+                vlan_opts,
             })
         }
     }
@@ -234,6 +243,10 @@ impl NetworkOptionsView {
                 .child(Panel::new(
                     BondOptionsView::new(options_ref.clone())
                         .with_name(Self::BOND_OPTIONS_VIEW_NAME),
+                ))
+                .child(Panel::new(
+                    VlanOptionsView::new(options_ref.clone())
+                        .with_name(Self::VLAN_OPTIONS_VIEW_NAME),
                 )),
         );
 
@@ -242,11 +255,12 @@ impl NetworkOptionsView {
             .button("Ok", {
                 move |siv| {
                     match Self::get_view_values(siv, options_ref.clone()) {
-                        Ok((pin_opts, bond_opts)) => {
+                        Ok((pin_opts, bond_opts, vlan_opts)) => {
                             siv.pop_layer();
                             let options = &mut options_ref.lock().expect("unpoisoned lock");
                             options.pinning_options = pin_opts;
                             options.bond_options = bond_opts;
+                            options.vlan_options = vlan_opts;
                         }
                         Err(err) => {
                             siv.add_layer(Dialog::info(err.to_string()));
@@ -263,10 +277,18 @@ impl NetworkOptionsView {
     fn get_view_values(
         siv: &mut Cursive,
         options_ref: NetworkViewOptionsRef,
-    ) -> Result<(NetworkInterfacePinningOptions, NetworkBondOptions)> {
-        let (pinning_enabled, bond_enabled) = {
+    ) -> Result<(
+        NetworkInterfacePinningOptions,
+        NetworkBondOptions,
+        NetworkVlanOptions,
+    )> {
+        let (pinning_enabled, bond_enabled, vlan_enabled) = {
             let options = options_ref.lock().expect("unpoisoned lock");
-            (options.pinning_enabled, options.bond_enabled)
+            (
+                options.pinning_enabled,
+                options.bond_enabled,
+                options.vlan_enabled,
+            )
         };
 
         // disabled options may be left empty or invalid, they keep their previous values
@@ -301,7 +323,21 @@ impl NetworkOptionsView {
                 .clone()
         };
 
-        Ok((pin_opts, bond_opts))
+        let vlan_opts = if vlan_enabled {
+            let vlan_opts = siv
+                .call_on_name(Self::VLAN_OPTIONS_VIEW_NAME, VlanOptionsView::get_values)
+                .unwrap_or_else(|| bail!("failed to retrieve management network VLAN options"))?;
+            vlan_opts.verify()?;
+            vlan_opts
+        } else {
+            options_ref
+                .lock()
+                .expect("unpoisoned lock")
+                .vlan_options
+                .clone()
+        };
+
+        Ok((pin_opts, bond_opts, vlan_opts))
     }
 
     fn refresh_ifname_view(siv: &mut Cursive, options_ref: NetworkViewOptionsRef) {
@@ -791,5 +827,85 @@ impl BondOptionsView {
 }
 
 impl ViewWrapper for BondOptionsView {
+    cursive::wrap_impl!(self.view: LinearLayout);
+}
+
+struct VlanOptionsView {
+    view: LinearLayout,
+}
+
+impl VlanOptionsView {
+    const FORM_NAME: &str = "network-vlan-form-view";
+
+    fn new(options_ref: NetworkViewOptionsRef) -> Self {
+        let options = &options_ref.lock().expect("unpoisoned lock");
+
+        let mut form = FormView::<()>::new().child("VLAN tag", {
+            let view = IntegerEditView::new()
+                .allow_empty(true)
+                .min_value(1)
+                .max_value(4094)
+                .enabled(options.vlan_enabled);
+            match options.vlan_options.vid {
+                0 => view,
+                vid => view.content(vid as usize),
+            }
+        });
+        form.set_labels_enabled(options.vlan_enabled);
+
+        let view = LinearLayout::vertical()
+            .child(
+                LinearLayout::horizontal()
+                    .child(
+                        Checkbox::new()
+                            .with_checked(options.vlan_enabled)
+                            .on_change({
+                                let options_ref = options_ref.clone();
+                                move |siv, enabled| {
+                                    options_ref.lock().expect("unpoisoned lock").vlan_enabled =
+                                        enabled;
+                                    Self::toggle_all(siv, enabled);
+                                }
+                            }),
+                    )
+                    .child(
+                        TextView::new(" Enable VLAN setup on the management interface").no_wrap(),
+                    ),
+            )
+            .child(DummyView::new())
+            .child(form.with_name(Self::FORM_NAME));
+
+        Self { view }
+    }
+
+    fn toggle_all(siv: &mut Cursive, enabled: bool) {
+        siv.call_on_name(Self::FORM_NAME, |form: &mut FormView| {
+            form.set_labels_enabled(enabled);
+            if let Some(v) = form.get_child_mut::<IntegerEditView>(0) {
+                v.set_enabled(enabled);
+            }
+        });
+    }
+
+    fn get_values(&mut self) -> Result<NetworkVlanOptions> {
+        let form = self
+            .view
+            .get_child_mut(2)
+            .and_then(|v| v.downcast_mut::<NamedView<FormView<()>>>())
+            .ok_or(anyhow!("failed to retrieve VLAN options form"))?
+            .get_mut();
+
+        let vid = form
+            .get_child::<IntegerEditView>(0)
+            .and_then(|view| view.get_content_maybe())
+            .ok_or(anyhow!("VLAN tag must be set"))??;
+
+        Ok(NetworkVlanOptions {
+            vid: vid.try_into()?,
+        })
+    }
+}
+
+impl ViewWrapper for VlanOptionsView {
     cursive::wrap_impl!(self.view: LinearLayout);
 }

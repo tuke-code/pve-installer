@@ -31,6 +31,7 @@ pub use timezone::*;
 
 pub struct NumericEditView<T> {
     view: LinearLayout,
+    min_value: Option<T>,
     max_value: Option<T>,
     placeholder: Option<T>,
     max_content_width: Option<usize>,
@@ -44,6 +45,7 @@ impl<T: Copy + ToString + FromStr + PartialOrd> NumericEditView<T> {
 
         Self {
             view,
+            min_value: None,
             max_value: None,
             placeholder: None,
             max_content_width: None,
@@ -63,11 +65,22 @@ impl<T: Copy + ToString + FromStr + PartialOrd> NumericEditView<T> {
 
         Self {
             view,
+            min_value: None,
             max_value: None,
             placeholder: None,
             max_content_width: None,
             allow_empty: false,
         }
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.inner_mut().set_enabled(enabled);
+        self
+    }
+
+    pub fn min_value(mut self, min: T) -> Self {
+        self.min_value = Some(min);
+        self
     }
 
     pub fn max_value(mut self, max: T) -> Self {
@@ -139,13 +152,23 @@ impl<T: Copy + ToString + FromStr + PartialOrd> NumericEditView<T> {
         self.max_value = Some(max);
     }
 
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.inner_mut().set_enabled(enabled);
+    }
+
+    /// Checks if the new value is actually valid according to the min and max value, if set
     fn check_bounds(&mut self, original: Arc<String>, result: EventResult) -> EventResult {
-        // Check if the new value is actually valid according to the max value, if set
-        if let Some(max) = self.max_value
-            && let Ok(val) = self.get_content()
-            && result.is_consumed()
-            && val > max
-        {
+        let value = self.get_content_maybe().and_then(Result::ok);
+        let above_min = self
+            .min_value
+            .zip(value)
+            .is_none_or(|(min, val)| val >= min);
+        let below_max = self
+            .max_value
+            .zip(value)
+            .is_none_or(|(max, val)| val <= max);
+
+        if result.is_consumed() && (!above_min || !below_max) {
             // Restore the original value, before the insert
             let cb = self.inner_mut().set_content((*original).clone());
             return EventResult::with_cb_once(move |siv| {

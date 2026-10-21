@@ -71,6 +71,10 @@ impl InstallerOptions {
             summary.push(SummaryOption::new("Bond members", members));
         }
 
+        if let Some(opts) = &self.network.vlan_opts {
+            summary.push(SummaryOption::new("VLAN tag", opts.vid.to_string()));
+        }
+
         summary.extend([
             SummaryOption::new("Hostname", self.network.fqdn.to_string()),
             SummaryOption::new("Host IP (CIDR)", self.network.address.to_string()),
