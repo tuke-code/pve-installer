@@ -87,6 +87,7 @@ my @steps = (
 # GUI global variables
 my $gtk_state = {
     network_bonding_enabled => 0,
+    network_vlan_enabled => 0,
 };
 
 my $target_hds; # only for the summary view
@@ -630,6 +631,65 @@ my sub create_network_bond_frame {
     return ($frame, $refresh_if_names, $on_done);
 }
 
+my sub create_network_vlan_frame {
+    my $frame = Gtk3::Frame->new('Management VLAN');
+
+    my $vbox = Gtk3::Box->new('vertical', 5);
+    $frame->add($vbox);
+    $vbox->set_margin_start(10);
+    $vbox->set_margin_end(10);
+    $vbox->set_margin_top(5);
+    $vbox->set_margin_bottom(5);
+
+    my $enable_checkbox = Gtk3::CheckButton->new('Enable VLAN setup on the management interface');
+    $enable_checkbox->set_active($gtk_state->{network_vlan_enabled});
+    $vbox->pack_start($enable_checkbox, 1, 0, 5);
+
+    my $vlan_opts = Proxmox::Install::Config::get_mngmt_vlan_opt();
+
+    # a spin button would silently clamp an invalid tag to the nearest valid one
+    my $vid_input = Gtk3::Entry->new();
+    $vid_input->set_text($vlan_opts->{vid} || '');
+    $vid_input->set_max_length(4);
+    $vid_input->set_tooltip_text('Must be between 2 and 4094 inclusive.');
+
+    my $opts_grid = $create_label_widget_grid->([
+        ['VLAN Tag', $vid_input],
+    ]);
+
+    $vbox->pack_start($opts_grid, 0, 0, 5);
+
+    my $set_sensitive = sub {
+        my ($active) = @_;
+
+        $opts_grid->foreach(sub {
+            $_[0]->set_sensitive($active);
+        });
+    };
+    $set_sensitive->($gtk_state->{network_vlan_enabled});
+
+    $enable_checkbox->signal_connect(
+        toggled => sub {
+            my $active = !!$enable_checkbox->get_active();
+
+            $gtk_state->{network_vlan_enabled} = $active;
+            $set_sensitive->($active);
+        },
+    );
+
+    my $on_done = sub {
+        if (!$enable_checkbox->get_active()) {
+            Proxmox::Install::Config::set_mngmt_vlan_opt('enabled', 0);
+            return;
+        }
+
+        Proxmox::Install::Config::set_mngmt_vlan_opt('vid', $vid_input->get_text());
+        Proxmox::Install::Config::set_mngmt_vlan_opt('enabled', 1);
+    };
+
+    return ($frame, $on_done);
+}
+
 my sub create_network_advanced_options_view {
     my ($done_cb) = @_;
 
@@ -650,9 +710,11 @@ my sub create_network_advanced_options_view {
 
     my ($bond_frame, $bond_refresh, $bond_on_done) = create_network_bond_frame();
     my ($pin_frame, $pin_on_done) = create_network_interface_pin_frame($bond_refresh);
+    my ($vlan_frame, $vlan_on_done) = create_network_vlan_frame();
 
     $hbox->pack_start($pin_frame, 0, 0, 10);
     $hbox->pack_start($bond_frame, 0, 0, 10);
+    $hbox->pack_start($vlan_frame, 0, 0, 10);
 
     $scrolled_window->add($hbox);
     $content->pack_start($scrolled_window, 1, 1, 10);
@@ -662,6 +724,7 @@ my sub create_network_advanced_options_view {
             eval {
                 $pin_on_done->();
                 $bond_on_done->();
+                $vlan_on_done->();
             };
             if ($@) {
                 Proxmox::UI::message($@, $dialog);
@@ -1041,6 +1104,11 @@ sub create_ack_view {
             $gtk_state->{network_pinning_enabled}
             ? $nic_mapping->{ $iface->{mac} }
             : $iface->{name};
+    }
+
+    if (Proxmox::Install::Config::get_mngmt_vlan_enabled()) {
+        my $vid = Proxmox::Install::Config::get_mngmt_vlan_opt('vid');
+        $interface .= ", VLAN $vid";
     }
 
     my %config_values = (
