@@ -868,12 +868,43 @@ sub generate_ifupdown2_config {
             && ($_->{protocol} // '') eq 'ra';
     } $gateways6->@*;
 
-    if ($iso_env->{cfg}->{bridged_network}) {
-        if ($bond_enabled) {
-            $ifaces .= "auto $ethdev\niface $ethdev $ntype manual\n$bond_config";
-        } else {
-            $ifaces .= "iface $ethdev $ntype manual\n";
-        }
+    my $vlan_id =
+        Proxmox::Install::Config::get_mngmt_vlan_enabled()
+        ? Proxmox::Install::Config::get_mngmt_vlan_opt('vid')
+        : undef;
+
+    # the live environment is not on the management VLAN, so its routes say nothing about it
+    $is_gateway6_from_ra = 0 if defined($vlan_id);
+
+    my $link_config =
+        $bond_enabled
+        ? "auto $ethdev\niface $ethdev $ntype manual\n$bond_config"
+        : "iface $ethdev $ntype manual\n";
+
+    my $get_vlan_config = sub {
+        my ($raw_device) = @_;
+
+        return
+            "\nauto vlan$vlan_id\niface vlan$vlan_id $ntype static\n"
+            . "\taddress $cidr\n"
+            . "\tgateway $gateway\n"
+            . "\tvlan-raw-device $raw_device\n";
+    };
+
+    if ($iso_env->{cfg}->{bridged_network} && defined($vlan_id)) {
+        $ifaces .= $link_config;
+
+        $ifaces .=
+            "\nauto vmbr0\niface vmbr0 $ntype manual\n"
+            . "\tbridge-ports $ethdev\n"
+            . "\tbridge-stp off\n"
+            . "\tbridge-fd 0\n"
+            . "\tbridge-vlan-aware yes\n"
+            . "\tbridge-vids 2-4094\n";
+
+        $ifaces .= $get_vlan_config->('vmbr0');
+    } elsif ($iso_env->{cfg}->{bridged_network}) {
+        $ifaces .= $link_config;
 
         $ifaces .=
             "\nauto vmbr0\niface vmbr0 $ntype static\n"
@@ -882,6 +913,9 @@ sub generate_ifupdown2_config {
             . "\tbridge-ports $ethdev\n"
             . "\tbridge-stp off\n"
             . "\tbridge-fd 0\n";
+    } elsif (defined($vlan_id)) {
+        $ifaces .= $bond_enabled ? $link_config : "auto $ethdev\n$link_config";
+        $ifaces .= $get_vlan_config->($ethdev);
     } else {
         $ifaces .= "auto $ethdev\n" . #
             "iface $ethdev $ntype static\n" . #

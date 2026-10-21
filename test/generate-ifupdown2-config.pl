@@ -36,6 +36,10 @@ my sub set_config {
 
     Proxmox::Install::Config::merge({
         mngmt_nic => $cfg{bond} ? 'bond0' : 'eno1',
+        mngmt_vlan => {
+            enabled => $cfg{vlan},
+            vid => $cfg{vlan} ? 5 : 0,
+        },
         mngmt_bond => {
             members => $cfg{bond} ? ['12:34:56:ab:cd:ef', 'ab:cd:ef:12:34:56'] : [],
             mode => 'active-backup',
@@ -56,7 +60,7 @@ $expected
 
 source /etc/network/interfaces.d/*
 EOT
-        "$msg (bridge:$current_cfg->{bridge} bond:$current_cfg->{bond})",
+        "$msg (bridge:$current_cfg->{bridge} bond:$current_cfg->{bond} vlan:$current_cfg->{vlan})",
     );
 }
 
@@ -88,7 +92,7 @@ $proxmox_install_runenv->redefine(
         };
     },
 );
-set_config(bridge => 0, bond => 0);
+set_config(bridge => 0, bond => 0, vlan => 0);
 Proxmox::Install::Config::merge({
     cidr => '192.168.0.10/24',
     gateway => '192.168.0.1',
@@ -97,18 +101,22 @@ Proxmox::Install::Config::merge({
 ###
 # There's essentially a matrix to test w.r.t the overall networking setup:
 #
-# +-------+--------+------+
-# | test# | bridge | bond |
-# +=======+========+======+
-# |   1   |    0   |  0   |
-# |   2   |    0   |  1   |
-# |   3   |    1   |  0   |
-# |   4   |    1   |  1   |
-# +-------+--------+------+
+# +-------+--------+------+------+
+# | test# | bridge | bond | vlan |
+# +=======+========+======+======+
+# |   1   |    0   |  0   |  0   |
+# |   2   |    0   |  0   |  1   |
+# |   3   |    0   |  1   |  0   |
+# |   4   |    0   |  1   |  1   |
+# |   5   |    1   |  0   |  0   |
+# |   6   |    1   |  0   |  1   |
+# |   7   |    1   |  1   |  0   |
+# |   8   |    1   |  1   |  1   |
+# +-------+--------+------+------+
 ###
 
 # 1.
-set_config(bridge => 0, bond => 0);
+set_config(bridge => 0, bond => 0, vlan => 0);
 is_generated(
     <<EOT
 auto eno1
@@ -122,7 +130,25 @@ EOT
 );
 
 # 2.
-set_config(bridge => 0, bond => 1);
+set_config(bridge => 0, bond => 0, vlan => 1);
+is_generated(
+    <<EOT
+auto eno1
+iface eno1 inet manual
+
+auto vlan5
+iface vlan5 inet static
+	address 192.168.0.10/24
+	gateway 192.168.0.1
+	vlan-raw-device eno1
+
+iface eno2 inet manual
+EOT
+    , 'host network setup',
+);
+
+# 3.
+set_config(bridge => 0, bond => 1, vlan => 0);
 is_generated(
     <<EOT
 auto bond0
@@ -142,8 +168,33 @@ EOT
     , 'host network setup',
 );
 
-# 3.
-set_config(bridge => 1, bond => 0);
+# 4.
+set_config(bridge => 0, bond => 1, vlan => 1);
+is_generated(
+    <<EOT
+auto bond0
+iface bond0 inet manual
+	bond-slaves eno1 eno2
+	bond-miimon 100
+	bond-mode active-backup
+
+auto vlan5
+iface vlan5 inet static
+	address 192.168.0.10/24
+	gateway 192.168.0.1
+	vlan-raw-device bond0
+
+auto eno1
+iface eno1 inet manual
+
+auto eno2
+iface eno2 inet manual
+EOT
+    , 'host network setup',
+);
+
+# 5.
+set_config(bridge => 1, bond => 0, vlan => 0);
 is_generated(
     <<EOT
 iface eno1 inet manual
@@ -161,8 +212,33 @@ EOT
     , 'host network setup',
 );
 
-# 4.
-set_config(bridge => 1, bond => 1);
+# 6.
+set_config(bridge => 1, bond => 0, vlan => 1);
+is_generated(
+    <<EOT
+iface eno1 inet manual
+
+auto vmbr0
+iface vmbr0 inet manual
+	bridge-ports eno1
+	bridge-stp off
+	bridge-fd 0
+	bridge-vlan-aware yes
+	bridge-vids 2-4094
+
+auto vlan5
+iface vlan5 inet static
+	address 192.168.0.10/24
+	gateway 192.168.0.1
+	vlan-raw-device vmbr0
+
+iface eno2 inet manual
+EOT
+    , 'host network setup',
+);
+
+# 7.
+set_config(bridge => 1, bond => 1, vlan => 0);
 is_generated(
     <<EOT
 auto bond0
@@ -188,12 +264,45 @@ EOT
     , 'host network setup',
 );
 
+# 8.
+set_config(bridge => 1, bond => 1, vlan => 1);
+is_generated(
+    <<EOT
+auto bond0
+iface bond0 inet manual
+	bond-slaves eno1 eno2
+	bond-miimon 100
+	bond-mode active-backup
+
+auto vmbr0
+iface vmbr0 inet manual
+	bridge-ports bond0
+	bridge-stp off
+	bridge-fd 0
+	bridge-vlan-aware yes
+	bridge-vids 2-4094
+
+auto vlan5
+iface vlan5 inet static
+	address 192.168.0.10/24
+	gateway 192.168.0.1
+	vlan-raw-device vmbr0
+
+auto eno1
+iface eno1 inet manual
+
+auto eno2
+iface eno2 inet manual
+EOT
+    , 'host network setup',
+);
+
 # interface name pinning test
 Proxmox::Install::Config::merge({
     mngmt_nic => 'eno1',
     network_interface_pin_map => $pin_map,
 });
-set_config(bridge => 1, bond => 0);
+set_config(bridge => 1, bond => 0, vlan => 0);
 is_generated(
     <<EOT
 iface nic0 inet manual
@@ -245,7 +354,7 @@ $proxmox_install_runenv->redefine(
         };
     },
 );
-set_config(bridge => 0, bond => 0);
+set_config(bridge => 0, bond => 0, vlan => 0);
 
 is_generated(
     <<EOT
@@ -259,7 +368,7 @@ EOT
 );
 
 # A bridge does not accept router advertisements, as it forwards
-set_config(bridge => 1, bond => 0);
+set_config(bridge => 1, bond => 0, vlan => 0);
 is_generated(
     <<EOT
 iface eno1 inet6 manual
@@ -283,7 +392,7 @@ Proxmox::Install::Config::merge({
     cidr => '2001:db8::1/64',
     gateway => 'fe80::1',
 });
-set_config(bridge => 0, bond => 1);
+set_config(bridge => 0, bond => 1, vlan => 0);
 
 is_generated(
     <<EOT
@@ -309,7 +418,7 @@ Proxmox::Install::Config::merge({
     cidr => '192.168.0.10/24',
     gateway => '192.168.0.1',
 });
-set_config(bridge => 0, bond => 0);
+set_config(bridge => 0, bond => 0, vlan => 0);
 $proxmox_install_runenv->redefine(
     get => sub {
         return {
@@ -352,7 +461,7 @@ EOT
     , 'unpinnable names keep their kernel name',
 );
 
-set_config(bridge => 1, bond => 1);
+set_config(bridge => 1, bond => 1, vlan => 0);
 Proxmox::Install::Config::merge({
     mngmt_nic => 'bond0',
     mngmt_bond => {
@@ -443,7 +552,7 @@ is(
     'unknown bond member is an error',
 );
 
-set_config(bridge => 0, bond => 1);
+set_config(bridge => 0, bond => 1, vlan => 0);
 Proxmox::Install::Config::merge({
     network_interface_pin_map => $pin_map,
     mngmt_bond => {
@@ -522,6 +631,76 @@ like(
     Proxmox::Install::generate_ifupdown2_config(),
     qr/^\tbond-slaves eno1 eno2$/m,
     'bond member sharing its MAC address is the first physical link by name',
+);
+
+# The routes of the installation environment are not those of the management VLAN
+$proxmox_install_runenv->redefine(
+    get => sub {
+        return {
+            network => {
+                interfaces => {
+                    eno1 => {
+                        mac => '12:34:56:ab:cd:ef',
+                        index => 1,
+                        name => 'eno1',
+                        pinned_id => '0',
+                    },
+                    eno2 => {
+                        mac => 'ab:cd:ef:12:34:56',
+                        index => 2,
+                        name => 'eno2',
+                        pinned_id => '1',
+                    },
+                },
+                routes => {
+                    gateways6 => [{ dev => 'eno1', gateway => 'fe80::1', protocol => 'ra' }],
+                },
+            },
+        };
+    },
+);
+set_config(bridge => 0, bond => 1, vlan => 1);
+Proxmox::Install::Config::merge({
+    cidr => '2001:db8::1/64',
+    gateway => 'fe80::1',
+});
+is_generated(
+    <<EOT
+auto bond0
+iface bond0 inet6 manual
+	bond-slaves eno1 eno2
+	bond-miimon 100
+	bond-mode active-backup
+
+auto vlan5
+iface vlan5 inet6 static
+	address 2001:db8::1/64
+	gateway fe80::1
+	vlan-raw-device bond0
+
+auto eno1
+iface eno1 inet6 manual
+
+auto eno2
+iface eno2 inet6 manual
+EOT
+    , 'management VLAN always gets the configured gateway',
+);
+
+for my $id (0, 1, 4095, 'abc', '1.5') {
+    eval { Proxmox::Install::Config::set_mngmt_vlan_opt('vid', $id) };
+    like(
+        $@,
+        qr/^VLAN tag must be between 2 and 4094 inclusive, got '\Q$id\E'/,
+        "VLAN tag '$id' is rejected",
+    );
+}
+
+Proxmox::Install::Config::set_mngmt_vlan_opt('vid', '0005');
+is(
+    Proxmox::Install::Config::get_mngmt_vlan_opt('vid'),
+    5,
+    'VLAN tag with leading zeros is normalized',
 );
 
 done_testing();
