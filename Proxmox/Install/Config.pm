@@ -113,6 +113,11 @@ my sub init_cfg {
             primary_interface => undef,
         },
 
+        mngmt_vlan => {
+            enabled => 0,
+            vid => 0,
+        },
+
         # maps mac address -> custom name
         # if set to a hash, enables interface name pinning for all interfaces
         network_interface_pin_map => undef,
@@ -299,6 +304,31 @@ sub get_mngmt_bond_opt {
 
 sub get_mngmt_bond_enabled { # virtual config
     return scalar(get_mngmt_bond_opt('members')->@*) >= 2;
+}
+
+sub set_mngmt_vlan_opt {
+    my ($k, $v) = @_;
+    my $opts = get('mngmt_vlan');
+
+    croak "unknown management vlan option key '$k'" if !exists($opts->{$k});
+
+    if ($k eq 'vid') {
+        die "VLAN tag must be between 2 and 4094 inclusive, got '$v'\n"
+            if !Proxmox::Sys::Net::is_valid_vlan_id($v);
+        $opts->{$k} = int($v);
+    } else {
+        $opts->{$k} = $v;
+    }
+}
+
+sub get_mngmt_vlan_opt {
+    my ($k) = @_;
+    my $opts = get('mngmt_vlan');
+    return defined($k) ? $opts->{$k} : $opts;
+}
+
+sub get_mngmt_vlan_enabled {
+    return get_mngmt_vlan_opt('enabled') != 0;
 }
 
 sub set_network_interface_pin_map { set_key('network_interface_pin_map', $_[0]); }

@@ -17,6 +17,7 @@ our @EXPORT_OK = qw(
     validate_link_pin_map
     is_valid_bond_mode
     is_valid_bond_hash_policy
+    is_valid_vlan_id
     MIN_IFNAME_LEN
     MAX_IFNAME_LEN
     DEFAULT_PIN_PREFIX
@@ -466,6 +467,13 @@ sub is_valid_bond_mode {
 sub is_valid_bond_hash_policy {
     my ($policy) = @_;
     return defined($policy) && !!grep { $_ eq $policy } @BOND_HASH_POLICIES;
+}
+
+# 0 and 4095 are reserved, 1 is the default PVID of VLAN-aware bridges on Linux
+sub is_valid_vlan_id {
+    my ($vid) = @_;
+
+    return defined($vid) && $vid =~ m/^[0-9]+$/ && $vid >= 2 && $vid <= 4094;
 }
 
 1;
