@@ -27,12 +27,26 @@ pub struct AppInfo<'a> {
     pub on_command: fn(Option<&str>, &mut Arguments) -> Result<()>,
 }
 
+/// Error of a command that was already reported.
+#[derive(Debug)]
+struct CommandFailed;
+
+impl std::fmt::Display for CommandFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("command failed")
+    }
+}
+
+impl std::error::Error for CommandFailed {}
+
 pub fn run(info: AppInfo) -> process::ExitCode {
-    if let Err(err) = parse_args(&info) {
-        eprintln!("Error: {err:#}\n\n{}", info.global_help);
-        process::ExitCode::FAILURE
-    } else {
-        process::ExitCode::SUCCESS
+    match parse_args(&info) {
+        Ok(()) => process::ExitCode::SUCCESS,
+        Err(err) if err.is::<CommandFailed>() => process::ExitCode::FAILURE,
+        Err(err) => {
+            eprintln!("Error: {err:#}\n\n{}", info.global_help);
+            process::ExitCode::FAILURE
+        }
     }
 }
 
@@ -56,6 +70,7 @@ pub fn handle_command<T: Subcommand>(args: &mut pico_args::Arguments) -> Result<
         T::print_usage();
     } else if let Err(err) = T::parse(args).and_then(|cmd| cmd.run()) {
         eprintln!("Error: {err:#}");
+        return Err(CommandFailed.into());
     }
 
     Ok(())
