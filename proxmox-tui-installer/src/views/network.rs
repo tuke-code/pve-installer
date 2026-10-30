@@ -536,6 +536,12 @@ impl InterfacePinningOptionsView {
                                 .name,
                         )
                         .max_content_width(MAX_IFNAME_LEN)
+                        .on_edit({
+                            let options_ref = options_ref.clone();
+                            move |siv, _, _| {
+                                BondOptionsView::refresh_ifnames(siv, options_ref.clone())
+                            }
+                        })
                         .with_enabled(options.pinning_enabled)
                         .fixed_width(MAX_IFNAME_LEN),
                 );
@@ -575,6 +581,35 @@ impl InterfacePinningOptionsView {
         });
     }
 
+    /// Returns the names as currently entered, before they are validated.
+    fn entered_names(siv: &mut Cursive) -> HashMap<MacAddress, String> {
+        siv.call_on_name(Self::FORM_NAME, |form: &mut FormView<MacAddress>| {
+            Self::read_names(form)
+        })
+        .and_then(Result::ok)
+        .unwrap_or_default()
+    }
+
+    fn read_names(form: &FormView<MacAddress>) -> Result<HashMap<MacAddress, String>> {
+        let mut mapping = HashMap::new();
+
+        for i in 0..form.len() {
+            let Some((inner, mac)) = form.get_child_with_data::<LinearLayout>(i) else {
+                continue;
+            };
+
+            let name = inner
+                .get_child(1)
+                .and_then(|v| v.downcast_ref::<ResizedView<EditView>>())
+                .map(|v| v.get_inner().get_content())
+                .ok_or_else(|| anyhow!("failed to retrieve pinning ID for interface {mac:x}"))?;
+
+            mapping.insert(*mac, (*name).clone());
+        }
+
+        Ok(mapping)
+    }
+
     fn get_values(&mut self) -> Result<NetworkInterfacePinningOptions> {
         let form = self
             .view
@@ -583,26 +618,7 @@ impl InterfacePinningOptionsView {
             .ok_or(anyhow!("failed to retrieve interface pinning form"))?
             .get_mut();
 
-        let mut mapping = HashMap::new();
-
-        for i in 0..form.len() {
-            let (inner, mac) = match form.get_child_with_data::<LinearLayout>(i) {
-                Some(formdata) => formdata,
-                None => continue,
-            };
-
-            let name = inner
-                .get_child(1)
-                .and_then(|v| v.downcast_ref::<ResizedView<EditView>>())
-                .map(|v| v.get_inner().get_content())
-                .ok_or(anyhow!(
-                    "failed to retrieve pinning ID for interface {}",
-                    mac
-                ))?;
-
-            mapping.insert(*mac, (*name).clone());
-        }
-
+        let mapping = Self::read_names(&form)?;
         let opts = NetworkInterfacePinningOptions { mapping };
         opts.verify()?;
 
@@ -692,7 +708,7 @@ impl BondOptionsView {
                         .bond_options
                         .primary_interface
                         .and_then(|mac| options.network.physical_interface_by_mac(&mac))
-                        .map(|iface| Self::interface_name(options, iface))
+                        .map(|iface| Self::interface_name(options, iface, &HashMap::new()))
                         .unwrap_or_default(),
                 ),
             );
@@ -729,7 +745,7 @@ impl BondOptionsView {
                 .is_some_and(|member| member.name == iface.name)
         };
         for iface in options.interfaces.iter().filter(is_listed) {
-            let label = Self::format_interface_label(options, iface);
+            let label = Self::format_interface_label(options, iface, &HashMap::new());
             let is_member = options.bond_options.members.contains(&iface.mac);
 
             checkboxes.add(&label, is_member, iface.mac);
@@ -827,6 +843,8 @@ impl BondOptionsView {
     }
 
     fn refresh_ifnames(siv: &mut Cursive, options_ref: NetworkViewOptionsRef) {
+        let entered_names = InterfacePinningOptionsView::entered_names(siv);
+
         siv.call_on_name(
             Self::MEMBERS_VIEW_NAME,
             |group: &mut CheckboxGroup<MacAddress>| {
@@ -834,7 +852,7 @@ impl BondOptionsView {
                 group.update_labels(|mac| {
                     options.network.physical_interface_by_mac(mac).map_or_else(
                         || mac.to_string(),
-                        |iface| Self::format_interface_label(&options, iface),
+                        |iface| Self::format_interface_label(&options, iface, &entered_names),
                     )
                 });
             },
@@ -900,13 +918,25 @@ impl BondOptionsView {
         })
     }
 
-    /// Name the interface will have on the installed system.
-    fn interface_name(options: &NetworkViewOptions, iface: &Interface) -> String {
-        iface.installed_name(options.pinning_enabled.then_some(&options.pinning_options))
+    /// Name the interface will have on the installed system, preferring a pinned name as entered
+    /// on the pinning page over the saved one.
+    fn interface_name(
+        options: &NetworkViewOptions,
+        iface: &Interface,
+        entered_names: &HashMap<MacAddress, String>,
+    ) -> String {
+        match entered_names.get(&iface.mac) {
+            Some(name) if options.pinning_enabled && !name.is_empty() => name.clone(),
+            _ => iface.installed_name(options.pinning_enabled.then_some(&options.pinning_options)),
+        }
     }
 
-    fn format_interface_label(options: &NetworkViewOptions, iface: &Interface) -> String {
-        let name = Self::interface_name(options, iface);
+    fn format_interface_label(
+        options: &NetworkViewOptions,
+        iface: &Interface,
+        entered_names: &HashMap<MacAddress, String>,
+    ) -> String {
+        let name = Self::interface_name(options, iface, entered_names);
         let mut label = format!(
             "{name} ({:x}, {}, {})",
             iface.mac, iface.driver, iface.state
