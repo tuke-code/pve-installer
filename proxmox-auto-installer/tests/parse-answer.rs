@@ -167,6 +167,7 @@ mod tests {
             network_bond_unknown_member,
             network_bond_unknown_option,
             network_interface_pinning_overlong_interface_name,
+            network_interface_pinning_reserved_name,
             network_vlan_from_dhcp,
             network_vlan_id_1,
             network_vlan_invalid_vid,

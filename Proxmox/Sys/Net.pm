@@ -474,6 +474,7 @@ sub parse_fqdn : prototype($) {
 # - duplicate interface names
 # - only contains ASCII alphanumeric characters and underscore, as enforced by
 #   our `pve-iface` json schema.
+# - names of bonds, VLANs and bridges, as the products recognize them by their name
 sub validate_link_pin_map : prototype($) {
     my ($mapping) = @_;
     my $reverse_mapping = {};
@@ -494,6 +495,10 @@ sub validate_link_pin_map : prototype($) {
         if ($name !~ m/^[a-z][a-z0-9_]{1,20}([:\.]\d+)?$/i) {
             die "interface name '$name' for '$mac' is invalid: name must start with a letter and "
                 . "contain only ascii characters, digits and underscores\n";
+        }
+
+        if ($name =~ m/^(?:bond|vlan|vmbr)\d+$/) {
+            die "interface name '$name' for '$mac' is reserved for bonds, VLANs and bridges\n";
         }
 
         if ($reverse_mapping->{$name}) {

@@ -67,4 +67,16 @@ is(
     "fully numeric name is rejected",
 );
 
+for my $name (qw(bond0 vlan100 vmbr0)) {
+    eval { validate_link_pin_map({ 'ab:cd:ef:12:34:56' => $name }) };
+    is(
+        $@,
+        "interface name '$name' for 'ab:cd:ef:12:34:56' is reserved for bonds, VLANs and bridges\n",
+        "name '$name' of a virtual interface is rejected",
+    );
+}
+
+eval { validate_link_pin_map({ 'ab:cd:ef:12:34:56' => 'bond_uplink0' }) };
+is($@, '', 'name only starting like a bond is accepted');
+
 done_testing();

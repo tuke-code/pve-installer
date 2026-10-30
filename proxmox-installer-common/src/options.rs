@@ -332,6 +332,7 @@ impl NetworkInterfacePinningOptions {
     /// - duplicate interface names
     /// - only contains ASCII alphanumeric characters and underscore, as
     ///   enforced by our `pve-iface` json schema.
+    /// - names of bonds, VLANs and bridges, as the products recognize them by their name
     pub fn verify(&self) -> Result<()> {
         // Mimicking the `pve-iface` schema verification
         static RE: OnceLock<Regex> = OnceLock::new();
@@ -341,6 +342,8 @@ impl NetworkInterfacePinningOptions {
                 .build()
                 .unwrap()
         });
+        static RESERVED_RE: OnceLock<Regex> = OnceLock::new();
+        let reserved_re = RESERVED_RE.get_or_init(|| Regex::new(r"^(bond|vlan|vmbr)\d+$").unwrap());
 
         let mut reverse_mapping = HashMap::<String, MacAddress>::new();
         for (mac, name) in self.mapping.iter() {
@@ -360,6 +363,12 @@ impl NetworkInterfacePinningOptions {
             if !re.is_match(name) {
                 bail!(
                     "interface name '{name}' for '{mac:x}' is invalid: name must start with a letter and contain only ascii characters, digits and underscores"
+                );
+            }
+
+            if reserved_re.is_match(name) {
+                bail!(
+                    "interface name '{name}' for '{mac:x}' is reserved for bonds, VLANs and bridges"
                 );
             }
 

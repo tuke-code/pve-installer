@@ -1,0 +1,3 @@
+{
+  "error": "interface name 'bond0' for 'ab:cd:ef:12:34:56' is reserved for bonds, VLANs and bridges"
+}
