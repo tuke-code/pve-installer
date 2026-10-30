@@ -382,7 +382,7 @@ my $create_label_widget_grid = sub {
 };
 
 my sub create_network_interface_pin_page {
-    my ($on_enable_changed) = @_;
+    my ($on_names_changed) = @_;
 
     my $vbox = Gtk3::Box->new('vertical', 5);
     $vbox->set_margin_start(10);
@@ -430,6 +430,7 @@ my sub create_network_interface_pin_page {
         $grid->attach($input, 1, $row, 1, 1);
         $row++;
 
+        $input->signal_connect(changed => sub { $on_names_changed->() });
         $inputs->{ $iface->{mac} } = $input;
     }
 
@@ -449,7 +450,7 @@ my sub create_network_interface_pin_page {
             $gtk_state->{network_pinning_enabled} = $active;
             $set_sensitive->($active);
 
-            $on_enable_changed->($active);
+            $on_names_changed->();
         },
     );
 
@@ -463,10 +464,18 @@ my sub create_network_interface_pin_page {
         Proxmox::Install::Config::set_network_interface_pin_map(\%new_mapping);
     };
 
-    return ($vbox, $on_done);
+    my $get_name = sub {
+        my ($mac) = @_;
+        my $name = defined($inputs->{$mac}) ? $inputs->{$mac}->get_text() : '';
+        return length($name) ? $name : undef;
+    };
+
+    return ($vbox, $on_done, $get_name);
 }
 
 my sub create_network_bond_page {
+    my ($get_pinned_name) = @_;
+
     my $vbox = Gtk3::Box->new('vertical', 5);
     $vbox->set_margin_start(10);
     $vbox->set_margin_end(10);
@@ -485,8 +494,7 @@ my sub create_network_bond_page {
 
         return $iface->{name} if !$gtk_state->{network_pinning_enabled};
 
-        my $mapping = Proxmox::Install::Config::get_network_interface_pin_map();
-        return $mapping->{ $iface->{mac} } // $iface->{name};
+        return $get_pinned_name->($iface->{mac}) // $iface->{name};
     };
 
     my $mode_combo = Gtk3::ComboBoxText->new();
@@ -711,8 +719,10 @@ my sub create_network_advanced_options_view {
 
     my $content = $dialog->get_content_area();
 
-    my ($bond_page, $bond_refresh, $bond_on_done) = create_network_bond_page();
-    my ($pin_page, $pin_on_done) = create_network_interface_pin_page($bond_refresh);
+    my $bond_refresh;
+    my ($pin_page, $pin_on_done, $get_pinned_name) =
+        create_network_interface_pin_page(sub { $bond_refresh->() });
+    (my $bond_page, $bond_refresh, my $bond_on_done) = create_network_bond_page($get_pinned_name);
     my ($vlan_page, $vlan_on_done) = create_network_vlan_page();
 
     # leave room for the title, tabs and buttons, so the dialog also fits smaller screens
