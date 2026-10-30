@@ -30,10 +30,11 @@ fn get_all_network_interfaces() -> Result<Vec<NetworkInterface>> {
     let links = get_nic_list()?;
     for link in links {
         let mac = fs::read_to_string(format!("/sys/class/net/{link}/address"))?;
-        result.push(NetworkInterface {
-            link,
-            mac: mac.trim().parse()?,
-        });
+        // links like InfiniBand ones have no Ethernet MAC address
+        let Ok(mac) = mac.trim().parse() else {
+            continue;
+        };
+        result.push(NetworkInterface { link, mac });
     }
     Ok(result)
 }
