@@ -129,6 +129,7 @@ mod tests {
             minimal,
             network_interface_pinning,
             network_interface_pinning_disabled,
+            network_interface_pinning_from_answer,
             network_interface_pinning_uppercase_mac_address,
             nic_matching,
             no_network,

@@ -85,7 +85,15 @@ fn get_network_settings(
         network_options.address = settings.cidr;
         network_options.dns_server = settings.dns;
         network_options.gateway = settings.gateway;
-        network_options.ifname = get_single_udev_index(&settings.filter, &udev_info.nics)?;
+
+        let ifname = get_single_udev_index(&settings.filter, &udev_info.nics)?;
+        // the post-installation hook identifies the management interface by its final name
+        network_options.ifname = network_options
+            .pinning_opts
+            .as_ref()
+            .zip(runtime_info.network.interfaces.get(&ifname))
+            .and_then(|(opts, iface)| iface.to_pinned(opts))
+            .map_or(ifname, |iface| iface.name);
     }
 
     if let Some(opts) = &network_options.pinning_opts {
