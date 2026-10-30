@@ -658,7 +658,10 @@ fn validate_answer_file_keys(path: impl AsRef<Path> + fmt::Debug) -> Result<bool
 
     fn validate(section: &[&str], v: toml::Value) -> bool {
         // These sections only hold udev properties, so don't validate them
-        if section == ["network", "filter"] || section == ["disk-setup", "filter"] {
+        if section == ["network", "filter"]
+            || section == ["network", "bond", "filter"]
+            || section == ["disk-setup", "filter"]
+        {
             return true;
         }
 

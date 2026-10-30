@@ -1,0 +1,19 @@
+[global]
+keyboard = "de"
+country = "at"
+fqdn = "pveauto.testinstall"
+mailto = "mail@no.invalid"
+timezone = "Europe/Vienna"
+root-password = "12345678"
+
+[network]
+source = "from-dhcp"
+
+[network.bond]
+filter.ID_PATH = "pci-0000:c2:00.0"
+mode = "active-backup"
+hash-policy = "layer3+4"
+
+[disk-setup]
+filesystem = "ext4"
+disk-list = ["sda"]

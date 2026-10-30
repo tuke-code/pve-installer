@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use glob::Pattern;
 use log::{info, warn};
 use std::{
@@ -11,7 +11,7 @@ use proxmox_installer_types::{
     answer::{
         AutoInstallerConfig, DiskSelection, Filesystem, FilesystemOptions, FilesystemType,
         FilterMatch, FirstBootHookSourceMode, FqdnConfig, FqdnFromDhcpConfig, FqdnSourceMode,
-        NetworkConfig,
+        NetworkBondOptions, NetworkConfig,
     },
 };
 
@@ -24,9 +24,10 @@ use proxmox_installer_common::{
     },
     setup::{
         InstallBtrfsOption, InstallConfig, InstallFirstBootSetup, InstallRootPassword,
-        InstallZfsOption, LocaleInfo, RuntimeInfo, SetupInfo,
+        InstallZfsOption, LocaleInfo, NetworkInfo, RuntimeInfo, SetupInfo,
     },
 };
+use proxmox_network_types::MacAddress;
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +45,12 @@ fn get_network_settings(
         .filter(|answer| answer.enabled)
         .map(|answer| answer.into());
 
+    let bond_opts = answer
+        .network
+        .bond()
+        .map(|opts| resolve_bond_options(opts, udev_info, &runtime_info.network))
+        .transpose()?;
+
     let mut network_options = match &answer.global.fqdn.fqdn {
         // If the user set a static FQDN in the answer file, override it
         FqdnConfig::Simple(name) => {
@@ -52,7 +59,7 @@ fn get_network_settings(
                 &runtime_info.network,
                 None,
                 pinning_opts.as_ref(),
-                answer.network.bond(),
+                bond_opts.as_ref(),
             );
             opts.fqdn = name.to_owned();
             opts
@@ -81,7 +88,7 @@ fn get_network_settings(
                 &runtime_info.network,
                 domain.as_deref(),
                 pinning_opts.as_ref(),
-                answer.network.bond(),
+                bond_opts.as_ref(),
             )
         }
     };
@@ -137,8 +144,6 @@ fn get_network_settings(
     }
 
     if let Some(opts) = &network_options.bond_opts {
-        opts.verify()?;
-
         let members = opts
             .members
             .iter()
@@ -272,6 +277,70 @@ fn is_live_vlan_link(name: &str) -> bool {
         .is_some_and(|(index, tag)| is_number(index) && is_number(tag))
 }
 
+/// Returns the bond options of the answer with the members selected by its filter, if it has one,
+/// and checks that all members are physical network interfaces.
+fn resolve_bond_options(
+    opts: &NetworkBondOptions,
+    udev_info: &UdevInfo,
+    network: &NetworkInfo,
+) -> Result<NetworkBondOptions> {
+    opts.verify()?;
+
+    let mut opts = opts.clone();
+    if !opts.filter.is_empty() {
+        opts.members = get_bond_members_by_filter(&opts, udev_info, network)?;
+        opts.filter.clear();
+        opts.filter_match = None;
+        opts.verify()?;
+    }
+
+    for mac in &opts.members {
+        if network.physical_interface_by_mac(mac).is_none() {
+            bail!("bond member {mac:x} does not match any physical network interface");
+        }
+    }
+
+    Ok(opts)
+}
+
+/// Returns the MAC addresses of the physical network interfaces the filter of the bond options
+/// selects.
+fn get_bond_members_by_filter(
+    opts: &NetworkBondOptions,
+    udev_info: &UdevInfo,
+    network: &NetworkInfo,
+) -> Result<Vec<MacAddress>> {
+    let match_all = opts.filter_match.unwrap_or_default() == FilterMatch::All;
+    let names = get_matched_udev_indexes(&opts.filter, &udev_info.nics, match_all)
+        .map_err(|err| anyhow!("cannot select bond members - {err:#}"))?;
+
+    let mut members = Vec::new();
+    let mut member_names = Vec::new();
+    for name in names {
+        if let Some(iface) = network.interfaces.get(&name)
+            && network
+                .physical_interface_by_mac(&iface.mac)
+                .is_some_and(|member| member.name == name)
+        {
+            members.push(iface.mac);
+            member_names.push(name);
+        }
+    }
+
+    if members.len() < 2 {
+        bail!(
+            "bond member filter must match at least 2 physical network interfaces, matched: {}",
+            if member_names.is_empty() {
+                "none".to_owned()
+            } else {
+                member_names.join(", ")
+            }
+        );
+    }
+
+    Ok(members)
+}
+
 pub fn get_matched_udev_indexes(
     filter: &BTreeMap<String, String>,
     udev_list: &BTreeMap<String, BTreeMap<String, String>>,
@@ -280,7 +349,8 @@ pub fn get_matched_udev_indexes(
     let patterns = filter
         .iter()
         .map(|(key, value)| {
-            let pattern = Pattern::new(value).context("invalid glob in disk selection")?;
+            let pattern =
+                Pattern::new(value).with_context(|| format!("invalid glob '{value}' for {key}"))?;
             Ok((key, pattern))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -591,14 +661,6 @@ pub fn verify_network_settings(
 
     if let Some(opts) = network.bond() {
         opts.verify()?;
-
-        if let Some(run_env) = run_env {
-            for mac in &opts.members {
-                if run_env.network.physical_interface_by_mac(mac).is_none() {
-                    bail!("bond member {mac:x} does not match any physical network interface");
-                }
-            }
-        }
     }
 
     if let Some(opts) = network.vlan() {

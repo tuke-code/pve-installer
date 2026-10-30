@@ -1,0 +1,3 @@
+{
+  "error": "bond member filter must match at least 2 physical network interfaces, matched: eno1"
+}
