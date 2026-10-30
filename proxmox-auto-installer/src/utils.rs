@@ -38,6 +38,7 @@ fn get_network_settings(
     let pinning_opts = answer
         .network
         .interface_name_pinning()
+        .filter(|answer| answer.enabled)
         .map(|answer| answer.into());
 
     let mut network_options = match &answer.global.fqdn.fqdn {
