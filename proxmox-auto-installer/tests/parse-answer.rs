@@ -119,6 +119,7 @@ mod tests {
             btrfs_raid_level_uppercase,
             disk_match,
             disk_match_all,
+            disk_match_all_missing_property,
             disk_match_any,
             first_boot,
             fqdn_from_dhcp,

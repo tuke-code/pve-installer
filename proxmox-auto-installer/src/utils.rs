@@ -195,22 +195,27 @@ pub fn get_matched_udev_indexes(
     udev_list: &BTreeMap<String, BTreeMap<String, String>>,
     match_all: bool,
 ) -> Result<Vec<String>> {
+    let patterns = filter
+        .iter()
+        .map(|(key, value)| {
+            let pattern = Pattern::new(value).context("invalid glob in disk selection")?;
+            Ok((key, pattern))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     let mut matches = vec![];
     for (dev, dev_values) in udev_list {
-        let mut did_match_once = false;
-        let mut did_match_all = true;
-        for (filter_key, filter_value) in filter {
-            let filter_pattern =
-                Pattern::new(filter_value).context("invalid glob in disk selection")?;
-            for (udev_key, udev_value) in dev_values {
-                if udev_key == filter_key && filter_pattern.matches(udev_value) {
-                    did_match_once = true;
-                } else if udev_key == filter_key {
-                    did_match_all = false;
-                }
-            }
-        }
-        if (match_all && did_match_all) || (!match_all && did_match_once) {
+        let mut results = patterns.iter().map(|(key, pattern)| {
+            dev_values
+                .get(*key)
+                .is_some_and(|value| pattern.matches(value))
+        });
+        let is_match = if match_all {
+            results.all(|matched| matched)
+        } else {
+            results.any(|matched| matched)
+        };
+        if is_match {
             matches.push(dev.clone());
         }
     }
