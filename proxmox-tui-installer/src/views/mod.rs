@@ -520,6 +520,31 @@ impl<UDT> FormView<UDT> {
         }
     }
 
+    pub fn set_label_enabled(&mut self, index: usize, enabled: bool) {
+        let style = if enabled {
+            StyleType::primary()
+        } else {
+            StyleType::secondary()
+        };
+
+        let label = self
+            .view
+            .get_child_mut(0)
+            .and_then(|v| v.downcast_mut::<ResizedView<LinearLayout>>())
+            .and_then(|v| v.get_inner_mut().get_child_mut(index))
+            .and_then(|v| v.downcast_mut::<TextView>());
+
+        if let Some(label) = label {
+            label.set_style(style);
+        }
+    }
+
+    pub fn set_labels_enabled(&mut self, enabled: bool) {
+        for i in 0..self.len() {
+            self.set_label_enabled(i, enabled);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.view
             .get_child(1)

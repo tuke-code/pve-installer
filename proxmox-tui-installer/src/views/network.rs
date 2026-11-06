@@ -379,6 +379,7 @@ impl InterfacePinningOptionsView {
             }
         }
 
+        form.set_labels_enabled(options.pinning_enabled);
         view.add_child(form.with_name(Self::FORM_NAME));
 
         Self { view }
@@ -386,6 +387,7 @@ impl InterfacePinningOptionsView {
 
     fn toggle_all(siv: &mut Cursive, enabled: bool) {
         siv.call_on_name(Self::FORM_NAME, |v: &mut FormView<MacAddress>| {
+            v.set_labels_enabled(enabled);
             v.call_on_childs(&|v: &mut LinearLayout| {
                 if let Some(v) = v
                     .get_child_mut(1)
