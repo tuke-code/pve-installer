@@ -84,9 +84,11 @@ impl NetworkOptionsView {
         // First, sort interfaces by their link state and then name
         interfaces.sort_unstable_by(|a, b| (&a.state, &a.name).cmp(&(&b.state, &b.name)));
 
+        // the interface is given by the name it gets on the installed system
         let selected_index = network_info
             .interfaces
-            .get(&options.ifname)
+            .values()
+            .find(|iface| iface.installed_name(options.pinning_opts.as_ref()) == options.ifname)
             .map(|iface| iface.index)
             .unwrap_or_else(|| {
                 interfaces
