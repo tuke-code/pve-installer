@@ -230,6 +230,7 @@ sub get_redacted {
     if (defined($r->{root_password}) && ref($r->{root_password}) eq 'HASH') {
         $r->{root_password} = { '<redacted>' => '<redacted>' };
     }
+    $r->{subscription_key} = '<redacted>' if defined($r->{subscription_key});
 
     return $r;
 }
