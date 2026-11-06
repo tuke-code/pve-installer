@@ -381,13 +381,10 @@ my $create_label_widget_grid = sub {
     return $grid;
 };
 
-my sub create_network_interface_pin_frame {
+my sub create_network_interface_pin_page {
     my ($on_enable_changed) = @_;
 
-    my $frame = Gtk3::Frame->new('Interface Name Pinning');
-
     my $vbox = Gtk3::Box->new('vertical', 5);
-    $frame->add($vbox);
     $vbox->set_margin_start(10);
     $vbox->set_margin_end(10);
     $vbox->set_margin_top(5);
@@ -395,12 +392,12 @@ my sub create_network_interface_pin_frame {
 
     my $enable_checkbox = Gtk3::CheckButton->new('Pin network interface names');
     $enable_checkbox->set_active($gtk_state->{network_pinning_enabled});
-    $vbox->pack_start($enable_checkbox, 1, 0, 5);
+    $vbox->pack_start($enable_checkbox, 0, 0, 5);
 
     my $grid = Gtk3::Grid->new();
     $grid->set_column_spacing(10);
     $grid->set_row_spacing(10);
-    $vbox->pack_start($grid, 1, 1, 5);
+    $vbox->pack_start($grid, 0, 0, 5);
 
     my $interfaces = Proxmox::Install::RunEnv::get()->{network}->{interfaces};
     my $mapping = Proxmox::Install::Config::get_network_interface_pin_map();
@@ -466,14 +463,11 @@ my sub create_network_interface_pin_frame {
         Proxmox::Install::Config::set_network_interface_pin_map(\%new_mapping);
     };
 
-    return ($frame, $on_done);
+    return ($vbox, $on_done);
 }
 
-my sub create_network_bond_frame {
-    my $frame = Gtk3::Frame->new('Management Bond');
-
+my sub create_network_bond_page {
     my $vbox = Gtk3::Box->new('vertical', 5);
-    $frame->add($vbox);
     $vbox->set_margin_start(10);
     $vbox->set_margin_end(10);
     $vbox->set_margin_top(5);
@@ -481,7 +475,7 @@ my sub create_network_bond_frame {
 
     my $enable_checkbox = Gtk3::CheckButton->new('Enable bonding for the management interface');
     $enable_checkbox->set_active($gtk_state->{network_bonding_enabled});
-    $vbox->pack_start($enable_checkbox, 1, 0, 5);
+    $vbox->pack_start($enable_checkbox, 0, 0, 5);
 
     my $bond_opts = Proxmox::Install::Config::get_mngmt_bond_opt();
     my $interfaces = Proxmox::Install::RunEnv::get()->{network}->{interfaces};
@@ -628,14 +622,11 @@ my sub create_network_bond_frame {
         });
     };
 
-    return ($frame, $refresh_if_names, $on_done);
+    return ($vbox, $refresh_if_names, $on_done);
 }
 
-my sub create_network_vlan_frame {
-    my $frame = Gtk3::Frame->new('Management VLAN');
-
+my sub create_network_vlan_page {
     my $vbox = Gtk3::Box->new('vertical', 5);
-    $frame->add($vbox);
     $vbox->set_margin_start(10);
     $vbox->set_margin_end(10);
     $vbox->set_margin_top(5);
@@ -643,7 +634,7 @@ my sub create_network_vlan_frame {
 
     my $enable_checkbox = Gtk3::CheckButton->new('Enable VLAN setup on the management interface');
     $enable_checkbox->set_active($gtk_state->{network_vlan_enabled});
-    $vbox->pack_start($enable_checkbox, 1, 0, 5);
+    $vbox->pack_start($enable_checkbox, 0, 0, 5);
 
     my $vlan_opts = Proxmox::Install::Config::get_mngmt_vlan_opt();
 
@@ -687,7 +678,7 @@ my sub create_network_vlan_frame {
         Proxmox::Install::Config::set_mngmt_vlan_opt('enabled', 1);
     };
 
-    return ($frame, $on_done);
+    return ($vbox, $on_done);
 }
 
 my sub create_network_advanced_options_view {
@@ -699,36 +690,45 @@ my sub create_network_advanced_options_view {
 
     my $content = $dialog->get_content_area();
 
-    my $scrolled_window = Gtk3::ScrolledWindow->new();
-    $scrolled_window->set_hexpand(1);
-    $scrolled_window->set_vexpand(1);
-    $scrolled_window->set_propagate_natural_height(1);
-    $scrolled_window->set_policy('never', 'automatic');
-    $scrolled_window->set_min_content_height(200);
+    my ($bond_page, $bond_refresh, $bond_on_done) = create_network_bond_page();
+    my ($pin_page, $pin_on_done) = create_network_interface_pin_page($bond_refresh);
+    my ($vlan_page, $vlan_on_done) = create_network_vlan_page();
 
-    my $hbox = Gtk3::Box->new('vertical', 0);
+    # leave room for the title, tabs and buttons, so the dialog also fits smaller screens
+    my $max_page_height = Gtk3::Gdk::Screen::get_default()->get_height() - 250;
+    $max_page_height = 200 if $max_page_height < 200;
 
-    my ($bond_frame, $bond_refresh, $bond_on_done) = create_network_bond_frame();
-    my ($pin_frame, $pin_on_done) = create_network_interface_pin_frame($bond_refresh);
-    my ($vlan_frame, $vlan_on_done) = create_network_vlan_frame();
+    my $notebook = Gtk3::Notebook->new();
+    my @pages = (
+        ['Interface Name Pinning', $pin_page, $pin_on_done],
+        ['Management Bond', $bond_page, $bond_on_done],
+        ['Management VLAN', $vlan_page, $vlan_on_done],
+    );
+    for my $page (@pages) {
+        my ($title, $widget) = $page->@*;
 
-    $hbox->pack_start($pin_frame, 0, 0, 10);
-    $hbox->pack_start($bond_frame, 0, 0, 10);
-    $hbox->pack_start($vlan_frame, 0, 0, 10);
+        my $scrolled_window = Gtk3::ScrolledWindow->new();
+        $scrolled_window->set_hexpand(1);
+        $scrolled_window->set_vexpand(1);
+        $scrolled_window->set_propagate_natural_height(1);
+        $scrolled_window->set_policy('never', 'automatic');
+        $scrolled_window->set_min_content_height(200);
+        $scrolled_window->set_max_content_height($max_page_height);
+        $scrolled_window->add($widget);
 
-    $scrolled_window->add($hbox);
-    $content->pack_start($scrolled_window, 1, 1, 10);
+        $notebook->append_page($scrolled_window, Gtk3::Label->new($title));
+    }
+    $content->pack_start($notebook, 1, 1, 10);
 
     $dialog->signal_connect(
         response => sub {
-            eval {
-                $pin_on_done->();
-                $bond_on_done->();
-                $vlan_on_done->();
-            };
-            if ($@) {
-                Proxmox::UI::message($@, $dialog);
-                return;
+            for my $i (0 .. $#pages) {
+                eval { $pages[$i]->[2]->() };
+                if (my $err = $@) {
+                    $notebook->set_current_page($i);
+                    Proxmox::UI::message($err, $dialog);
+                    return;
+                }
             }
 
             $dialog->destroy();
