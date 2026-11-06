@@ -40,6 +40,13 @@ impl TabbedView {
         self
     }
 
+    /// Makes the tab at `index` the active one, if it exists.
+    pub fn set_current(&mut self, index: usize) {
+        if index < self.views.len() {
+            self.current = index;
+        }
+    }
+
     /// Returns a reference to the specified tab content view.
     pub fn get(&self, index: usize) -> Option<&dyn View> {
         self.views.get(index).map(|(_, view)| view.borrow())

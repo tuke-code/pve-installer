@@ -3,8 +3,8 @@ use cursive::{
     Cursive, View,
     view::{Finder, Nameable, Resizable, ViewWrapper},
     views::{
-        BoxedView, Button, Checkbox, Dialog, DummyView, EditView, LinearLayout, NamedView, Panel,
-        ResizedView, ScrollView, SelectView, TextView,
+        BoxedView, Button, Checkbox, Dialog, DummyView, EditView, LinearLayout, NamedView,
+        PaddedView, ResizedView, ScrollView, SelectView, TextView,
     },
 };
 use std::{
@@ -26,7 +26,7 @@ use proxmox_network_types::{
     ip_address::Cidr,
 };
 
-use super::{CheckboxGroup, CidrAddressEditView, FormView, IntegerEditView};
+use super::{CheckboxGroup, CidrAddressEditView, FormView, IntegerEditView, TabbedView};
 
 struct NetworkViewOptions {
     pinning_enabled: bool,
@@ -62,6 +62,11 @@ impl NetworkOptionsView {
     const INTERFACE_PINNING_VIEW_NAME: &str = "network-name-pinning-view";
     const BOND_OPTIONS_VIEW_NAME: &str = "network-bond-options-view";
     const VLAN_OPTIONS_VIEW_NAME: &str = "network-vlan-options-view";
+    const ADVANCED_OPTIONS_TABS_NAME: &str = "network-advanced-options-tabs";
+
+    const INTERFACE_PINNING_TAB: usize = 0;
+    const BOND_OPTIONS_TAB: usize = 1;
+    const VLAN_OPTIONS_TAB: usize = 2;
 
     pub fn new(options: &NetworkOptions, network_info: &NetworkInfo) -> Self {
         let mut interfaces = network_info
@@ -234,23 +239,34 @@ impl NetworkOptionsView {
     }
 
     fn advanced_options_view(options_ref: NetworkViewOptionsRef) -> impl View {
-        let inner = ScrollView::new(
-            LinearLayout::vertical()
-                .child(Panel::new(
+        fn page(view: impl View) -> PaddedView<ScrollView<impl View>> {
+            PaddedView::lrtb(1, 1, 1, 0, ScrollView::new(view))
+        }
+
+        let tabs = TabbedView::new()
+            .tab(
+                "Interface Name Pinning",
+                page(
                     InterfacePinningOptionsView::new(options_ref.clone())
                         .with_name(Self::INTERFACE_PINNING_VIEW_NAME),
-                ))
-                .child(Panel::new(
+                ),
+            )
+            .tab(
+                "Management Bond",
+                page(
                     BondOptionsView::new(options_ref.clone())
                         .with_name(Self::BOND_OPTIONS_VIEW_NAME),
-                ))
-                .child(Panel::new(
+                ),
+            )
+            .tab(
+                "Management VLAN",
+                page(
                     VlanOptionsView::new(options_ref.clone())
                         .with_name(Self::VLAN_OPTIONS_VIEW_NAME),
-                )),
-        );
+                ),
+            );
 
-        Dialog::around(inner)
+        Dialog::around(tabs.with_name(Self::ADVANCED_OPTIONS_TABS_NAME))
             .title("Advanced network options")
             .button("Ok", {
                 move |siv| {
@@ -262,7 +278,11 @@ impl NetworkOptionsView {
                             options.bond_options = bond_opts;
                             options.vlan_options = vlan_opts;
                         }
-                        Err(err) => {
+                        Err((tab, err)) => {
+                            siv.call_on_name(
+                                Self::ADVANCED_OPTIONS_TABS_NAME,
+                                |view: &mut TabbedView| view.set_current(tab),
+                            );
                             siv.add_layer(Dialog::info(err.to_string()));
                             return;
                         }
@@ -274,14 +294,19 @@ impl NetworkOptionsView {
             .max_size((80, 40))
     }
 
+    /// Returns the values of all advanced options, or the error together with the index of the
+    /// tab containing the invalid input.
     fn get_view_values(
         siv: &mut Cursive,
         options_ref: NetworkViewOptionsRef,
-    ) -> Result<(
-        NetworkInterfacePinningOptions,
-        NetworkBondOptions,
-        NetworkVlanOptions,
-    )> {
+    ) -> Result<
+        (
+            NetworkInterfacePinningOptions,
+            NetworkBondOptions,
+            NetworkVlanOptions,
+        ),
+        (usize, anyhow::Error),
+    > {
         let (pinning_enabled, bond_enabled, vlan_enabled) = {
             let options = options_ref.lock().expect("unpoisoned lock");
             (
@@ -297,7 +322,8 @@ impl NetworkOptionsView {
                 Self::INTERFACE_PINNING_VIEW_NAME,
                 InterfacePinningOptionsView::get_values,
             )
-            .unwrap_or_else(|| bail!("failed to retrieve network interface name pinning options"))?
+            .unwrap_or_else(|| bail!("failed to retrieve network interface name pinning options"))
+            .map_err(|err| (Self::INTERFACE_PINNING_TAB, err))?
         } else {
             options_ref
                 .lock()
@@ -312,8 +338,11 @@ impl NetworkOptionsView {
                     Self::BOND_OPTIONS_VIEW_NAME,
                     |view: &mut BondOptionsView| view.get_values(&pin_opts),
                 )
-                .unwrap_or_else(|| bail!("failed to retrieve management network bond options"))?;
-            bond_opts.verify()?;
+                .unwrap_or_else(|| bail!("failed to retrieve management network bond options"))
+                .map_err(|err| (Self::BOND_OPTIONS_TAB, err))?;
+            bond_opts
+                .verify()
+                .map_err(|err| (Self::BOND_OPTIONS_TAB, err))?;
             bond_opts
         } else {
             options_ref
@@ -326,8 +355,11 @@ impl NetworkOptionsView {
         let vlan_opts = if vlan_enabled {
             let vlan_opts = siv
                 .call_on_name(Self::VLAN_OPTIONS_VIEW_NAME, VlanOptionsView::get_values)
-                .unwrap_or_else(|| bail!("failed to retrieve management network VLAN options"))?;
-            vlan_opts.verify()?;
+                .unwrap_or_else(|| bail!("failed to retrieve management network VLAN options"))
+                .map_err(|err| (Self::VLAN_OPTIONS_TAB, err))?;
+            vlan_opts
+                .verify()
+                .map_err(|err| (Self::VLAN_OPTIONS_TAB, err))?;
             vlan_opts
         } else {
             options_ref
