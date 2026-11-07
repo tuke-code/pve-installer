@@ -2,83 +2,92 @@ proxmox-installer (9.2.9) trixie; urgency=medium
 
   * fix #2164: allow setting up a bond and a VLAN for the management network
     in all installers, so that a host is reachable over redundant links, or
-    on a network that is only reachable tagged, right after the installation,
-    without configuring that by hand on the console first:
-    - the graphical and terminal installers get an advanced options dialog
-      for the network, with tabs for interface name pinning, the bond and the
-      VLAN.
+    on a tagged-only network, right after the installation:
+    - the graphical and terminal installers configure them on new tabs of an
+      advanced network options dialog, which now also holds the interface
+      name pinning.
     - the automated installer accepts the new [network.bond] and
-      [network.vlan] sections in the answer file. Bond members are given by
-      their MAC addresses or selected by udev properties, a VLAN tag needs
-      the 'from-answer' network source. Installers supporting these report
-      answer fetch schema version 1.1, and the post-installation webhook
-      marks all bond members as management interfaces (schema version 1.3).
-    - the bond is named 'bond0', with its options written out like the
-      Proxmox VE network API does. With a VLAN, the address is configured on
+      [network.vlan] answer file sections. Bond members are given by MAC
+      address or selected by udev properties. The [network.vlan] section
+      requires the 'from-answer' network source. Installers with this support
+      report answer fetch schema version 1.1, and the post-installation
+      webhook (schema version 1.3) marks all bond members as management
+      interfaces.
+    - the bond is named 'bond0'. With a VLAN, the address is configured on
       the interface 'vlan<tag>', and on Proxmox VE the bridge 'vmbr0' becomes
       VLAN-aware, so guests can still use other VLANs on it.
-    - the 'balance-alb' and 'balance-tlb' modes come with a note on Proxmox
-      VE, as they are not suitable for a bridge used by guests.
-    - pinned interface names of the form 'bond<N>', 'vlan<N>' and 'vmbr<N>'
-      are rejected, as the products recognize these interfaces by name.
+    - on Proxmox VE, the installers warn about the 'balance-alb' and
+      'balance-tlb' modes, as they break traffic of guests on the bridge.
 
-  * support networks that are only reachable tagged also for the installation
-    environment: booting with the 'proxmox-vlan=<tag>' kernel parameter, or
-    preparing an ISO with 'proxmox-auto-install-assistant prepare-iso
-    --vlan-id <tag>', obtains DHCP leases and router advertisements on that
-    VLAN. The interactive installers then preselect the tag for the
-    management network, and the automated installer keeps it with the
-    'from-dhcp' network source.
+  * support tagged-only networks in the installation environment too: with
+    the 'proxmox-vlan=<tag>' kernel parameter, or an ISO prepared with
+    'proxmox-auto-install-assistant prepare-iso --vlan-id <tag>', it uses
+    that VLAN for DHCP and router advertisements. The interactive installers
+    then preselect the tag for the management network, and the automated
+    installer keeps it with the 'from-dhcp' network source.
 
-  * tui: fill in the address, gateway and DNS server of the newly selected
-    management interface, like the graphical installer does, so that the
-    proposed gateway belongs to a default route the kernel actually received
-    on that interface.
+  * reject pinned interface names of the form 'bond<N>', 'vlan<N>' and
+    'vmbr<N>', also without a bond or VLAN, as the products take interfaces
+    with such names for bonds, VLANs or bridges. Answer files using such
+    names need to be adapted.
+
+  * install: keep the kernel name of network interfaces that cannot be
+    pinned, like InfiniBand ones, if interface name pinning is enabled. They
+    got an entry without a name in the network configuration before.
+
+  * tui: fill in the address of a newly selected management interface and,
+    if it received a default route, also that gateway and a matching DNS
+    server, like the graphical installer does. Before, all fields kept the
+    values of the previously selected interface.
 
   * tui: preselect the interface of the default route as management interface
-    also with interface name pinning, which is enabled by default. Another
-    interface could be preselected before, next to the address of the default
-    route's interface, which put the management network on the wrong port if
-    accepted as is.
+    also with interface name pinning, which is enabled by default. Before,
+    another interface could be preselected together with the address of the
+    default route's interface, putting the management network on the wrong
+    port if accepted as is.
+
+  * tui, automated installer: leave out network links without an Ethernet MAC
+    address, like InfiniBand ones, which thus cannot be used as management
+    interface there anymore. Fetching an answer via HTTP failed on systems
+    with such a link before.
 
   * gtk ui: add a Cancel button to the disk options dialog, which restores the
     previous settings. Closing the dialog kept all changes made in it before.
 
   * automated installer:
-    - leave out network links without an Ethernet MAC address, like
-      InfiniBand ones, from the system information sent when fetching an
-      answer, which failed for them before.
     - disable interface name pinning if the answer file's pinning section
       sets 'enabled = false', instead of pinning all interfaces to their
       default 'nicN' names.
     - with 'filter-match = "all"', require devices to have all filtered udev
       properties. A device lacking one counted as match before, so filtering
       for ATA disks could also select NVMe disks for a RAID.
-    - mark the management interface in the post-installation webhook data
-      also for a static network configuration with interface name pinning.
+    - mark the management interface and send its address in the
+      post-installation webhook data also for a static network configuration
+      with interface name pinning.
     - accept any 2xx HTTP status as success, for example 204 No Content from
       a webhook receiver.
-    - do not follow redirects when fetching the answer or posting the
-      webhook. A redirect turned the request into a GET without its data, so
-      the URL must point to the final endpoint.
+    - fail on redirects when fetching the answer or posting the webhook,
+      instead of following them, as some turned the request into a GET
+      without its data. The URL must now point to the final endpoint.
     - fix certificate fingerprint pinning for URLs with an IPv6 address as
       host.
 
-  * proxmox-auto-install-assistant: exit with an error status if a command
-    fails, so that scripts no longer take, for example, an answer file that
-    'validate-answer' found invalid for a valid one.
+  * proxmox-auto-install-assistant, proxmox-chroot: exit with an error status
+    if a command fails, so that scripts can detect, for example, an answer
+    file rejected by 'validate-answer'.
 
-  * keep the root password and the subscription key out of the install log
-    and the confirmation data of the graphical installer, which may end up
-    attached to a support request, and make the latter readable by root only.
+  * keep the root password and the subscription key out of the install log,
+    and the root password out of the graphical installer's config-ack.json,
+    which is now readable by root only. Both files may end up attached to a
+    support request.
 
-  * save the installation config as UTF-8, so that the post-installation
-    webhook and proxmox-chroot can read it also with non-ASCII characters in,
-    for example, the root password.
+  * save the installation config as UTF-8, so that non-ASCII characters, for
+    example in the root password, no longer keep the post-installation
+    webhook and proxmox-chroot from reading it.
 
   * preseed the keyboard variant for the installed system too, so that its
-    console uses the selected keyboard. For example, Swiss French became Swiss
-    German there before.
+    console uses the selected keyboard layout. For example, Swiss French
+    became Swiss German there before.
 
   * fix #8020: skip SMBIOS text strings that are not valid UTF-8, which some
     firmware contains, instead of failing on them.
