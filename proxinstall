@@ -767,6 +767,10 @@ my sub create_network_advanced_options_view {
         },
     );
 
+    # a close request already emits a response, which applies the options and closes the dialog if
+    # they are valid, so only prevent the default destroy here
+    $dialog->signal_connect('delete-event' => sub { return 1; });
+
     $dialog->show_all();
     $dialog->run();
 }
